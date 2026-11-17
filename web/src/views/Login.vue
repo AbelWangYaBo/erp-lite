@@ -17,13 +17,19 @@ const rules = {
 }
 
 async function onSubmit() {
-  await formRef.value.validate()
+  try {
+    await formRef.value.validate()
+  } catch {
+    return // 校验失败：el-form 已在字段下方提示
+  }
   loading.value = true
   try {
     const d = await request.post('/auth/login', { username: form.username, password: form.password })
     auth.setAuth(d.token, form.username)
     ElMessage.success('登录成功')
     router.push(route.query.redirect || '/')
+  } catch {
+    // 接口错误：request.js 拦截器已弹全局提示
   } finally {
     loading.value = false
   }
