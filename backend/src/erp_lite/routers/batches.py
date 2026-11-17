@@ -141,7 +141,7 @@ def inspect_batch_api(
 @router.post(
     "/{batch_id}/dispose",
     response_model=BatchOut,
-    dependencies=[Depends(require_action("inspect.judge"))],
+    dependencies=[Depends(require_action("batch.dispose"))],
 )
 def dispose_batch_api(
     batch_id: int,

@@ -2,7 +2,8 @@
 
 YAGNI：演示系统角色固定，不做可配置权限；admin 恒全量。
 动作键约定：{域}.{动作}，写动作与敏感查询需显式授权，列表查询全员可读。
-JWT 签发 role claim；改角色后需重新登录以刷新 token（README 注明）。
+JWT 签发 role claim 仅作留痕；鉴权以数据库中的当前角色为准，
+角色变更即时生效（无需重新登录，README 注明）。
 """
 
 from erp_lite.models.users import Role

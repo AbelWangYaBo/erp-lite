@@ -155,8 +155,10 @@ def issue_mo(
     if body.lines:
         # 指定行：物料必须存在（引用校验）；指定 batch_id 的行视为“整批领用”
         # （v2-S6：中间件如 SEMI 自带 BOM 时仍可按批次直领，不再向下展开）；
-        # 未指定 batch_id 的行按 BOM 递归展开，无 BOM 直接采用
-        requirements: dict[int, Decimal] = {}
+        # 未指定 batch_id 的行按 BOM 递归展开，无 BOM 直接采用。
+        # 键为 (material_id, batch_id)：逐行按物料+批次独立扣减出库，行间不去重
+        # 不合并——同物料同批次多行可合并，不同批次严禁合并（否则批次流水错账）。
+        requirements: dict[tuple[int, int | None], Decimal] = {}
         for line in body.lines:
             if db.get(Material, line.material_id) is None:
                 raise HTTPException(
@@ -164,52 +166,45 @@ def issue_mo(
                     detail=f"物料不存在：{line.material_id}",
                 )
             if line.batch_id is not None:
-                requirements[line.material_id] = q4(
-                    requirements.get(line.material_id, ZERO) + _d(line.qty)
-                )
+                key = (line.material_id, line.batch_id)
+                requirements[key] = q4(requirements.get(key, ZERO) + _d(line.qty))
             else:
                 for mid, qty in expand_requirements(
                     db, line.material_id, _d(line.qty)
                 ).items():
-                    requirements[mid] = q4(requirements.get(mid, ZERO) + qty)
+                    key = (mid, None)
+                    requirements[key] = q4(requirements.get(key, ZERO) + qty)
     else:
         # 按 BOM × 本次完工比例展开；qty 缺省=整单计划量
         ratio_qty = _d(body.qty) if body.qty is not None else planned
         try:
-            requirements = expand_requirements(db, mo.material_id, ratio_qty)
+            expanded = expand_requirements(db, mo.material_id, ratio_qty)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
             )
-        if mo.material_id in requirements:
+        if mo.material_id in expanded:
             # 展开结果含成品自身（无 BOM 成品）时报错：领料对象不能是成品本身
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="该物料无 BOM，请通过 lines 指定领料明细",
             )
+        requirements = {(mid, None): qty for mid, qty in expanded.items()}
     if not requirements:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="领料明细不能为空"
         )
 
     # v2 批次：行指定 batch_id 时（该行为叶子物料）挂到对应物料；
-    # 批次物料最终没有批次的一律 400（BOM 展开的批次子件必须逐行指定批次）
-    batch_map: dict[int, int] = {}
-    if body.lines:
-        for line in body.lines:
-            if line.batch_id is not None and line.material_id in requirements:
-                batch_map[line.material_id] = line.batch_id
-    for mid in requirements:
+    # 批次物料最终没有批次的一律 400（BOM 展开的批次子件必须逐行指定批次）；
+    # 每个批次独立校验存在性/归属/放行状态（v2-S3）与批次级现存
+    for (mid, batch_id), qty in requirements.items():
         material = db.get(Material, mid)
-        if material.batch_required and mid not in batch_map:
+        if material.batch_required and batch_id is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"物料 {material.code} 已启用批次管理，领料必须指定批次",
             )
-
-    total_cost = ZERO
-    for mid, qty in requirements.items():
-        batch_id = batch_map.get(mid)
         if batch_id is not None:
             batch = db.get(Batch, batch_id)
             if batch is None:
@@ -235,7 +230,8 @@ def issue_mo(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"库存不足：物料 {mid} 现存量 {stock_qty}，需领料 {qty}",
             )
-    for mid, qty in requirements.items():
+    total_cost = ZERO
+    for (mid, batch_id), qty in requirements.items():
         move = post_move(
             db,
             material_id=mid,
@@ -244,9 +240,11 @@ def issue_mo(
             qty=-qty,
             source_type=DOC_TYPE,
             source_id=mo.id,
-            batch_id=batch_map.get(mid),
+            batch_id=batch_id,
         )
         cost = q4(-move.amount)  # 出库金额为负，成本取绝对值
+        # MoIssue 无批次维度：同物料多批次时按 (物料, 批次) 逐条落账，
+        # 合计仍等于本次领料总成本
         db.add(MoIssue(mo_id=mo.id, material_id=mid, qty=qty, cost_amount=cost))
         total_cost = q4(total_cost + cost)
     mo.issued_qty_cost = q4(_d(mo.issued_qty_cost) + total_cost)
@@ -295,16 +293,22 @@ def receive_mo(
     receipt_batch_id = None
     if product.batch_required:
         batch_no = next_finished_batch_no(db, mo.id, mo.doc_no)
-        batch, _ = get_or_create_batch(
-            db,
-            batch_no=batch_no,
-            material_id=mo.material_id,
-            source_type=DOC_TYPE,
-            source_id=mo.id,
-            supplier_id=None,
-            insp_status=InspStatus.qualified,
-            created_by=current_user.username,
-        )
+        try:
+            batch, _ = get_or_create_batch(
+                db,
+                batch_no=batch_no,
+                material_id=mo.material_id,
+                source_type=DOC_TYPE,
+                source_id=mo.id,
+                supplier_id=None,
+                insp_status=InspStatus.qualified,
+                created_by=current_user.username,
+            )
+        except ValueError as exc:
+            # 成品批次号撞上已判定的既有批次号（数据异常）→ 400 而非 500
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            )
         receipt_batch_id = batch.id
     post_move(
         db,
@@ -345,6 +349,8 @@ def close_mo(
     # 关闭结转：剩余未结转成本（issued_qty_cost − transferred_cost）以 adjust 流水
     # 调增成品库存金额（数量 0 不改存量，单价 = 剩余 / 已完工量，台账重算均价），
     # 并把 transferred_cost 补齐至累计领料成本，保证成本无残留。
+    # 注意：该 adjust 流水不带 batch_id，批次物料下该成本只进物料级口径，
+    # 批次级均价不含（余量成本不唯一归因到批次，已知分叉）。
     issued = _d(mo.issued_qty_cost)
     transferred = _d(mo.transferred_cost)
     remaining = q4(issued - transferred)

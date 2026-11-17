@@ -88,7 +88,7 @@ def update_user_role(
     write_op_log(
         db, current_user.username, "user_role_update",
         f"调整角色：{user.username} {old_role.value if hasattr(old_role, 'value') else old_role}"
-        f" → {payload.role.value}（需重新登录生效）",
+        f" → {payload.role.value}（即时生效：鉴权以数据库为准，JWT role claim 仅留痕）",
     )
     db.commit()
     db.refresh(user)

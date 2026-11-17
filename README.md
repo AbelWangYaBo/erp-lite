@@ -58,7 +58,8 @@ docker compose ps        # 三服务 Up/healthy
   | production | p123456 | production（BOM/MRP/MO） |
   | qa | q123 | qa（检验判定、资质审核） |
 
-  注意：JWT 签发时带 role claim，**修改用户角色后该账号需重新登录**才生效。
+  注意：角色变更**即时生效**（鉴权以数据库中的当前角色为准，JWT 中的 role claim
+  仅作留痕，无需重新登录）。
 
 ## 种子脚本（幂等）
 
@@ -79,6 +80,10 @@ cd backend && DATABASE_URL=postgresql+psycopg://erp:erp123@localhost:5432/erp \
 ```
 
 ## 冒烟脚本（全链路验收）
+
+> 注意：`smoke.py` 与 `smoke_v2.py` 均为**非幂等**脚本（会真实产生单据/流水且断言
+> 具体数字），必须在 seed 后的**干净库**上运行，**不可重复执行**；重跑前需删库重建
+> （`rm erp-dev.db` → `alembic upgrade head` → `seed.py`）。
 
 打 `http://localhost:18080/api/v1/*`（走 nginx 反代，一并验证 web 容器），走完整业务闭环并断言数字：
 登录 → 建物料/BOM → PO（100@10）分两次入库 40+60 → 查库存（100/1000/均价10）→ SO（30@15）→

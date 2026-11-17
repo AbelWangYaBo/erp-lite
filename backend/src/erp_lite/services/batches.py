@@ -1,6 +1,7 @@
 """批次服务（V2 批次内核 + S3 检验放行/追溯）。
 
-- 批次号全表唯一；同批次号再入库复用原记录（须同物料，异物料 400）。
+- 批次号全表唯一；同批次号再入库仅当原批次 insp_status=pending 时复用
+  （追加数量仍待检；须同物料，异物料或非 pending 状态 400）。
 - 采购入库批次 insp_status=pending（待检）；MO 完工批次建为 qualified
   （成品默认合格，后续可由 QA 复判）。
 - 放行控制（S3 强制）：仅 qualified 批次可被 MO 领料 / SO 出库，
@@ -39,9 +40,12 @@ def get_or_create_batch(
     insp_status: InspStatus = InspStatus.pending,
     created_by: str | None = None,
 ) -> tuple[Batch, bool]:
-    """按批次号取批次；不存在则创建，存在则复用（校验同物料）。
+    """按批次号取批次；不存在则创建，存在则复用（校验同物料 + 待检状态）。
 
-    返回 (批次, 是否新建)。复用时保留原来源/供应商/检验状态。
+    返回 (批次, 是否新建)。复用时保留原来源/供应商/检验状态；
+    仅当已存在批次 insp_status=pending 时允许复用（追加数量仍待检）——
+    qualified/rejected/closed 批次号再入库一律 ValueError（路由层转 400），
+    防止新增量借旧批次号免检放行或永久滞留。
     """
     batch = db.scalar(select(Batch).where(Batch.batch_no == batch_no))
     if batch is not None:
@@ -49,6 +53,10 @@ def get_or_create_batch(
             raise ValueError(
                 f"批次号 {batch_no} 已属于物料 {batch.material_id}，"
                 f"不能用于物料 {material_id}"
+            )
+        if batch.insp_status != InspStatus.pending:
+            raise ValueError(
+                f"批次号已存在且已完成检验判定，请使用新批次号（{batch_no}）"
             )
         return batch, False
     batch = Batch(
@@ -249,6 +257,8 @@ def trace_backward(db: Session, batch: Batch) -> dict[str, Any]:
     RAW 被 MO1 领用产 SEMI、SEMI 又被 MO2 领用产 FG 时，从 RAW 反查
     同时给出（MO1→SEMI 批次）与（MO2→FG 批次）两层链路。
     根批次无任何领料流水（成品批次）说明方向不当报错。
+    注意：反向追溯为 MO 级粒度过包归因（保守召回口径）——同一 MO 产出的
+    所有成品批次都会被召回，不按批次内实际消耗精确分摊。
     links: [{via_doc(领料 MO 单号), to_batch(下游成品/半成品批次), partner, qty(领用量)}]
     """
     links: list[dict[str, Any]] = []
