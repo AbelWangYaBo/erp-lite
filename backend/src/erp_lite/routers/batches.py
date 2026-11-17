@@ -11,8 +11,23 @@ from erp_lite.database import get_db
 from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import Batch, InspStatus, User
 from erp_lite.routers.common import paginate
-from erp_lite.schemas.batches import BatchDetail, BatchOut, BatchPage
-from erp_lite.services.batches import get_batch_stock
+from erp_lite.schemas.batches import (
+    BatchDetail,
+    BatchOut,
+    BatchPage,
+    DisposeIn,
+    InspectIn,
+    InspectionRecordOut,
+    TraceOut,
+)
+from erp_lite.services.audit import write_audit, write_op_log
+from erp_lite.services.batches import (
+    dispose_batch,
+    get_batch_stock,
+    inspect_batch,
+    trace_backward,
+    trace_forward,
+)
 from erp_lite.services.inventory import get_batch_avg_cost
 
 router = APIRouter(
@@ -70,3 +85,112 @@ def get_batch(
         material_name=batch.material.name,
     )
     return detail
+
+
+def _valueerror_400(exc: ValueError) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post(
+    "/{batch_id}/inspect",
+    response_model=InspectionRecordOut,
+    dependencies=[Depends(require_action("inspect.judge"))],
+)
+def inspect_batch_api(
+    batch_id: int,
+    body: InspectIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """QA 检验判定：pass → qualified / fail → rejected，检验记录+审计留痕。"""
+    batch = _get_or_404(db, batch_id)
+    old_status = batch.insp_status.value
+    try:
+        record = inspect_batch(
+            db,
+            batch,
+            items=[item.model_dump() for item in body.items],
+            conclusion=body.conclusion,
+            inspector=current_user.username,
+            remark=body.remark,
+        )
+    except ValueError as exc:
+        raise _valueerror_400(exc)
+    new_status = batch.insp_status.value
+    write_audit(
+        db, "batch", batch.id, "inspection", current_user.username,
+        field="insp_status", old=old_status, new=new_status,
+    )
+    write_op_log(
+        db, current_user.username, "batch_inspect",
+        f"检验判定：批次 {batch.batch_no} {old_status} → {new_status}（{body.conclusion}）",
+    )
+    db.commit()
+    db.refresh(record)
+    return {
+        "id": record.id,
+        "batch_id": record.batch_id,
+        "items": record.items_json,
+        "conclusion": record.conclusion,
+        "inspector": record.inspector,
+        "inspected_at": record.inspected_at,
+        "remark": record.remark,
+    }
+
+
+@router.post(
+    "/{batch_id}/dispose",
+    response_model=BatchOut,
+    dependencies=[Depends(require_action("inspect.judge"))],
+)
+def dispose_batch_api(
+    batch_id: int,
+    body: DisposeIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Batch:
+    """不合格批次处置：return 退货 / destroy 销毁 → insp_status=closed 留痕。"""
+    batch = _get_or_404(db, batch_id)
+    try:
+        dispose_batch(db, batch, disposition=body.disposition, remark=body.remark)
+    except ValueError as exc:
+        raise _valueerror_400(exc)
+    write_audit(
+        db, "batch", batch.id, "dispose", current_user.username,
+        field="insp_status", old=InspStatus.rejected.value, new=InspStatus.closed.value,
+    )
+    write_op_log(
+        db, current_user.username, "batch_dispose",
+        f"不合格处置：批次 {batch.batch_no} {body.disposition}，状态 → closed",
+    )
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+@router.get("/{batch_id}/trace-forward", response_model=TraceOut)
+def trace_forward_api(
+    batch_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """正向追溯：成品批次 → 所耗原料/子件批次 + 供应商（全员可查）。"""
+    batch = _get_or_404(db, batch_id)
+    try:
+        return trace_forward(db, batch)
+    except ValueError as exc:
+        raise _valueerror_400(exc)
+
+
+@router.get("/{batch_id}/trace-backward", response_model=TraceOut)
+def trace_backward_api(
+    batch_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """反向召回：原料批次 → 流向的 MO → 成品批次（全员可查）。"""
+    batch = _get_or_404(db, batch_id)
+    try:
+        return trace_backward(db, batch)
+    except ValueError as exc:
+        raise _valueerror_400(exc)

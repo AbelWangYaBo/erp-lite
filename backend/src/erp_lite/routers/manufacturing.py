@@ -27,7 +27,7 @@ from erp_lite.schemas.production import (
     MoReceiveIn,
 )
 from erp_lite.services.audit import write_audit, write_op_log
-from erp_lite.services.batches import get_or_create_batch, next_finished_batch_no
+from erp_lite.services.batches import ensure_batch_usable, get_or_create_batch, next_finished_batch_no
 from erp_lite.services.inventory import _d, get_stock, post_move, q4
 from erp_lite.services.mrp import expand_requirements, mo_completed_qty
 from erp_lite.services.numbering import next_doc_no
@@ -215,6 +215,13 @@ def issue_mo(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"批次 {batch.batch_no} 不属于物料 {mid}，禁止领料",
                 )
+            # v2-S3 放行拦截：仅 qualified 批次可领料（pending/rejected/closed 400）
+            try:
+                ensure_batch_usable(batch)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                )
         stock_qty, _ = get_stock(db, mid, mo.warehouse_id, batch_id=batch_id)
         if stock_qty < qty:
             raise HTTPException(
@@ -274,23 +281,14 @@ def receive_mo(
     transferred = min(proportional, available)
     # 入库单价 =（本次结转领料成本 + 本次制费）/ 本次入库数量
     unit_cost = q4((transferred + extra_cost) / qty)
-    post_move(
-        db,
-        material_id=mo.material_id,
-        warehouse_id=mo.warehouse_id,
-        move_type="mo_receipt",
-        qty=qty,
-        unit_cost=unit_cost,
-        source_type=DOC_TYPE,
-        source_id=mo.id,
-    )
     # v2 批次：成品物料启用批次管理时自动生成成品批次
-    # batch_no = MO 单号 + '-' + 序号。S2 阶段直接建为 qualified（成品默认合格，
-    # 保证 S2 演示链路可出库）；S3 接 QA 检验判定后改为 pending + 判定流转。
+    # batch_no = MO 单号 + '-' + 序号；成品默认 qualified（后续可由 QA 复判），
+    # 来源供应商为空。入库流水挂 batch_id（PRD 规则：批次物料流水必带批次）。
     product = db.get(Material, mo.material_id)
+    receipt_batch_id = None
     if product.batch_required:
         batch_no = next_finished_batch_no(db, mo.id, mo.doc_no)
-        get_or_create_batch(
+        batch, _ = get_or_create_batch(
             db,
             batch_no=batch_no,
             material_id=mo.material_id,
@@ -300,6 +298,18 @@ def receive_mo(
             insp_status=InspStatus.qualified,
             created_by=current_user.username,
         )
+        receipt_batch_id = batch.id
+    post_move(
+        db,
+        material_id=mo.material_id,
+        warehouse_id=mo.warehouse_id,
+        move_type="mo_receipt",
+        qty=qty,
+        unit_cost=unit_cost,
+        source_type=DOC_TYPE,
+        source_id=mo.id,
+        batch_id=receipt_batch_id,
+    )
     mo.transferred_cost = q4(_d(mo.transferred_cost) + transferred)
     mo.extra_cost = q4(_d(mo.extra_cost) + extra_cost)
     new_status = DocStatus.completed if completed + qty >= planned else DocStatus.partial

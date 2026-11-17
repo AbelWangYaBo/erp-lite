@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from erp_lite.models.base import Base, InspStatus, str_enum
@@ -31,3 +31,21 @@ class Batch(Base):
 
     material = relationship("Material")
     supplier = relationship("Partner")
+
+
+class InspectionRecord(Base):
+    """检验记录（GMP 证据）：一次判定一条，批次可复判、历史不覆盖。"""
+
+    __tablename__ = "inspection_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"), nullable=False)
+    items_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)  # [{name, result}]
+    conclusion: Mapped[str] = mapped_column(String(8), nullable=False)  # pass / fail
+    inspector: Mapped[str | None] = mapped_column(String(64), default=None)
+    inspected_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    remark: Mapped[str | None] = mapped_column(String(255), default=None)
+
+    batch = relationship("Batch")

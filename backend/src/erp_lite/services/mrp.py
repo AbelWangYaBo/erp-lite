@@ -17,6 +17,7 @@ from erp_lite.models import (
     PurchaseOrderLine,
 )
 from erp_lite.models.base import DocStatus
+from erp_lite.services.batches import get_available
 from erp_lite.services.inventory import _d, get_stock, q4
 
 # 在途单据状态：已审核（approved）与部分执行（partial）都可能有未完成量
@@ -113,7 +114,12 @@ def _net_expand(
     """净需求展开：有 BOM → make 并逐层向下，无 BOM → buy；净需求 ≤0 时截断。"""
     if material_id in path:
         raise _cycle_error(path, material_id)
-    stock_qty, _ = get_stock(db, material_id)
+    # v2-S3 可用量口径：批次物料只计 qualified 批次（pending/rejected/closed 不抵扣）
+    material = db.get(Material, material_id)
+    if material is not None and material.batch_required:
+        stock_qty = get_available(db, material_id, only_qualified=True)
+    else:
+        stock_qty, _ = get_stock(db, material_id)
     transit = q4(po_in_transit(db, material_id) + mo_in_transit(db, material_id))
     net = q4(gross - stock_qty - transit)
     if net <= 0:

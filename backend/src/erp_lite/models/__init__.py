@@ -13,7 +13,7 @@ from erp_lite.models.base import (
 )
 from erp_lite.models.users import Role, User
 from erp_lite.models.master_data import Material, Partner, Warehouse
-from erp_lite.models.batch import Batch
+from erp_lite.models.batch import Batch, InspectionRecord
 from erp_lite.models.purchase import PurchaseOrder, PurchaseOrderLine
 from erp_lite.models.sales import SalesOrder, SalesOrderLine
 from erp_lite.models.inventory import InventoryMove
@@ -44,6 +44,7 @@ __all__ = [
     "Material",
     "Partner",
     "Batch",
+    "InspectionRecord",
     "PurchaseOrder",
     "PurchaseOrderLine",
     "SalesOrder",

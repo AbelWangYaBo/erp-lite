@@ -30,6 +30,7 @@ from erp_lite.schemas.orders import (
 )
 from erp_lite.schemas.orders import OrderLineCreate as _Line
 from erp_lite.services.audit import write_audit, write_op_log
+from erp_lite.services.batches import ensure_batch_usable
 from erp_lite.services.inventory import _d, q4, post_move
 from erp_lite.services.numbering import next_doc_no
 from erp_lite.services.orders import (
@@ -229,6 +230,13 @@ def ship_sales_order(
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"批次 {batch.batch_no} 不属于物料 {material.code}，禁止出库",
+                )
+            # v2-S3 放行拦截：仅 qualified 批次可出库（pending/rejected/closed 400）
+            try:
+                ensure_batch_usable(batch)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
                 )
         remaining = _d(line.qty) - _d(line.shipped_qty)
         if item.qty > remaining:

@@ -89,6 +89,18 @@ def _mk_batch_material_po_received(client, db, qty, price, batch_no, mat_code="R
     return mat, sup, po, batch
 
 
+def _inspect_pass(client, batch_id):
+    """V2-S3：QA 判定合格放行（pending 批次领料/出库被拦截，先判合格再用）。"""
+    resp = client.post(
+        f"/api/v1/batches/{batch_id}/inspect",
+        json={
+            "items": [{"name": "外观", "result": "合格"}],
+            "conclusion": "pass",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
 # ---------- 采购入库接批次 ----------
 
 
@@ -306,6 +318,8 @@ def test_batch_avg_cost_after_outbound_hand_calc(client, db_session):
         ],
     )
     batch_b = db_session.scalar(select(Batch).where(Batch.batch_no == "LOT-B"))
+    # QA 合格放行 LOT-A（V2-S3 起仅 qualified 批次可出库）
+    _inspect_pass(client, batch_a.id)
     # SO 出库 6 个，从 LOT-A
     cus = _mk_partner(db_session, "CA", PartnerType.customer)
     db_session.commit()
@@ -441,6 +455,7 @@ def test_ship_with_batch_deducts_batch_stock(client, db_session):
     mat, sup, po, batch = _mk_batch_material_po_received(
         client, db_session, 10, "2", "LOT-D"
     )
+    _inspect_pass(client, batch.id)  # QA 合格放行后方可出库
     so, wh, cus = _mk_so_shipped(client, db_session, batch)
     resp = client.post(
         f"/api/v1/sales-orders/{so['id']}/ship",
@@ -524,6 +539,7 @@ def test_issue_with_batch_deducts_batch_stock(client, db_session):
     mat, sup, po, batch = _mk_batch_material_po_received(
         client, db_session, 10, "2", "LOT-J"
     )
+    _inspect_pass(client, batch.id)  # QA 合格放行后方可领料
     wh = db_session.scalar(select(Warehouse))
     product = _mk_mat(db_session, "PD2", category=MaterialCategory.finished)
     mo = _mk_mo_for(db_session, product, wh)
