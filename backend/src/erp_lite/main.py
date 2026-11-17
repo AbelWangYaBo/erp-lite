@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from erp_lite.routers import audit as audit_router
 from erp_lite.routers import auth as auth_router
+from erp_lite.routers import batches as batches_router
 from erp_lite.routers import boms as boms_router
 from erp_lite.routers import inventory as inventory_router
 from erp_lite.routers import manufacturing as manufacturing_router
@@ -42,6 +43,7 @@ app.include_router(inventory_router.router)
 app.include_router(boms_router.router)
 app.include_router(mrp_router.router)
 app.include_router(manufacturing_router.router)
+app.include_router(batches_router.router)
 app.include_router(finance_router.router)
 app.include_router(users_router.router)
 

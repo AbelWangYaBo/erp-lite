@@ -47,6 +47,15 @@ class SettleStatus(str, enum.Enum):
     settled = "settled"
 
 
+class InspStatus(str, enum.Enum):
+    """批次检验状态（GMP 放行控制：只有 qualified 可领料/出库）。"""
+
+    pending = "pending"
+    qualified = "qualified"
+    rejected = "rejected"
+    closed = "closed"
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

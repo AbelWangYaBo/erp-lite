@@ -11,6 +11,8 @@ from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     AuditRecord,
     DocStatus,
+    InspStatus,
+    Material,
     PurchaseOrder,
     PurchaseOrderLine,
     User,
@@ -28,6 +30,7 @@ from erp_lite.schemas.orders import (
 )
 from erp_lite.schemas.orders import OrderLineCreate as _Line
 from erp_lite.services.audit import write_audit, write_op_log
+from erp_lite.services.batches import get_or_create_batch
 from erp_lite.services.inventory import _d, q4, post_move
 from erp_lite.services.numbering import next_doc_no
 from erp_lite.services.orders import (
@@ -223,6 +226,31 @@ def receive_purchase_order(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"超收入库：行剩余可收 {q4(remaining)}，本次申请 {item.qty}",
             )
+        # v2 批次：批次物料必须给 batch_no（一次入库一批次）；非批次物料走 v1 路径
+        material = db.get(Material, line.material_id)
+        batch_id = None
+        if material.batch_required:
+            if not item.batch_no:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"物料 {material.code} 已启用批次管理，入库必须提供批次号",
+                )
+            try:
+                batch, _ = get_or_create_batch(
+                    db,
+                    batch_no=item.batch_no.strip(),
+                    material_id=line.material_id,
+                    source_type=DOC_TYPE,
+                    source_id=po.id,
+                    supplier_id=po.partner_id,
+                    insp_status=InspStatus.pending,  # 采购入库批次待检（S3 QA 判定）
+                    created_by=current_user.username,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                )
+            batch_id = batch.id
         post_move(
             db,
             material_id=line.material_id,
@@ -233,6 +261,7 @@ def receive_purchase_order(
             source_type=DOC_TYPE,
             source_id=po.id,
             source_line_id=line.id,
+            batch_id=batch_id,
         )
         line.received_qty = q4(_d(line.received_qty) + item.qty)
         total_amount += q4(item.qty * _d(line.unit_price))

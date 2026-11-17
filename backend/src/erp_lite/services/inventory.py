@@ -10,7 +10,7 @@ from typing import NamedTuple
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from erp_lite.models import InventoryMove, Material, MoveType
+from erp_lite.models import Batch, InventoryMove, Material, MoveType
 
 QUANT = Decimal("0.0001")
 
@@ -34,17 +34,39 @@ def q4(value) -> Decimal:
 
 
 def get_stock(
-    db: Session, material_id: int, warehouse_id: int | None = None
+    db: Session,
+    material_id: int,
+    warehouse_id: int | None = None,
+    batch_id: int | None = None,
 ) -> tuple[Decimal, Decimal]:
-    """现存量 / 现存金额 = 库存流水的 qty / amount 汇总（入库正、出库负）。"""
+    """现存量 / 现存金额 = 库存流水的 qty / amount 汇总（入库正、出库负）。
+
+    batch_id 传入时按 (material_id, batch_id) 批次维度汇总（v2 批次级库存）；
+    不传则保持 v1 物料级口径。
+    """
     stmt = select(
         func.coalesce(func.sum(InventoryMove.qty), 0),
         func.coalesce(func.sum(InventoryMove.amount), 0),
     ).where(InventoryMove.material_id == material_id)
     if warehouse_id is not None:
         stmt = stmt.where(InventoryMove.warehouse_id == warehouse_id)
+    if batch_id is not None:
+        stmt = stmt.where(InventoryMove.batch_id == batch_id)
     qty, amount = db.execute(stmt).one()
     return q4(qty), q4(amount)
+
+
+def get_batch_avg_cost(db: Session, batch_id: int) -> Decimal | None:
+    """批次级移动加权均价 = 批次现存金额 / 批次现存量；无量可比时返回 None。"""
+    stmt = select(
+        func.coalesce(func.sum(InventoryMove.qty), 0),
+        func.coalesce(func.sum(InventoryMove.amount), 0),
+    ).where(InventoryMove.batch_id == batch_id)
+    qty, amount = db.execute(stmt).one()
+    qty, amount = q4(qty), q4(amount)
+    if qty <= 0:
+        return None
+    return q4(amount / qty)
 
 
 def get_avg_cost(
@@ -88,10 +110,14 @@ def post_move(
     source_id: int,
     source_line_id: int | None = None,
     amount: Decimal | int | float | str | None = None,
+    batch_id: int | None = None,
 ) -> InventoryMove:
     """写一条库存流水并维护移动加权平均计价。
 
     - qty 带符号：入库正 / 出库负。
+    - batch_id（v2 批次物料）：须指向存在且属于该物料的批次；
+      出库时按批次维度校验现存并取批次级均价计成本。非批次物料传 None，
+      完全走 v1 物料级路径。
     - 入库：单价取传入 unit_cost，金额 = qty * unit_cost；
       新均价 = (现存金额 + 入库金额) / (现存数量 + 入库数量)（由台账汇总派生）。
     - 出库：单价取当前移动加权均价（现存量为 0 或库存不足时拒绝，报中文错误），
@@ -108,19 +134,32 @@ def post_move(
         move_type = MoveType(move_type)
     # 物料行锁（PG 下生效，见 docstring）
     db.execute(select(Material).where(Material.id == material_id).with_for_update())
+    # 批次校验（v2）：批次须存在且属于该物料；出库按批次维度计量
+    if batch_id is not None:
+        batch = db.get(Batch, batch_id)
+        if batch is None:
+            raise ValueError(f"批次不存在：{batch_id}")
+        if batch.material_id != material_id:
+            raise ValueError(
+                f"批次 {batch.batch_no} 不属于物料 {material_id}，禁止混用"
+            )
     if qty_d == 0:
         if move_type is not MoveType.adjust or amount is None:
             raise ValueError("数量不能为 0")
         unit_cost_d = q4(unit_cost)
         amount_d = q4(amount)
     elif qty_d < 0:
-        stock_qty, stock_amt = get_stock(db, material_id, warehouse_id)
+        stock_qty, stock_amt = get_stock(db, material_id, warehouse_id, batch_id=batch_id)
+        scope = (
+            f"批次 {batch.batch_no}"
+            if batch_id is not None
+            else f"物料 {material_id} / 仓库 {warehouse_id}"
+        )
         if stock_qty <= 0:
-            raise ValueError(f"现存量为 0，禁止出库（物料 {material_id} / 仓库 {warehouse_id}）")
+            raise ValueError(f"现存量为 0，禁止出库（{scope}）")
         if stock_qty + qty_d < 0:
             raise ValueError(
-                f"库存不足：现存量 {stock_qty}，需出库 {-qty_d}"
-                f"（物料 {material_id} / 仓库 {warehouse_id}）"
+                f"库存不足：现存量 {stock_qty}，需出库 {-qty_d}（{scope}）"
             )
         unit_cost_d = q4(stock_amt / stock_qty)  # 出库成本 = 当前移动加权均价
         amount_d = q4(qty_d * unit_cost_d)  # 负数
@@ -138,6 +177,7 @@ def post_move(
         source_type=source_type,
         source_id=source_id,
         source_line_id=source_line_id,
+        batch_id=batch_id,
     )
     db.add(move)
     db.flush()

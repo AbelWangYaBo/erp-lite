@@ -21,9 +21,13 @@ class InventoryMove(Base):
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     source_id: Mapped[int] = mapped_column(nullable=False)
     source_line_id: Mapped[int | None] = mapped_column(default=None)
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("batches.id"), default=None
+    )  # 非批次物料为空，v1 数据合法
     moved_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
 
     material = relationship("Material")
     warehouse = relationship("Warehouse")
+    batch = relationship("Batch")

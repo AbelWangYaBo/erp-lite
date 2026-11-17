@@ -28,15 +28,25 @@ def _plain(value) -> str | None:
     return None if value is None else str(value)
 
 
+def _attr(value):
+    """更新属性用的值：布尔原样保留（字符串 "False" 为真值会写坏 DB 列），
+    枚举转字符串值，其余转字符串。"""
+    if isinstance(value, enum.Enum):
+        return str(value.value)
+    if isinstance(value, bool) or value is None:
+        return value
+    return str(value)
+
+
 def apply_update_with_diff_audit(
     db: Session, obj, payload, doc_type: str, actor: User
 ) -> int:
     """逐字段 diff 更新对象；每个变更字段写一条 update 留痕，返回变更字段数。"""
     changed = 0
     for field, new in payload.model_dump().items():
-        new = _plain(new)
+        new = _attr(new)
         old = _plain(getattr(obj, field))
-        if old != new:
+        if old != _plain(new):
             write_audit(
                 db,
                 doc_type=doc_type,
@@ -45,7 +55,7 @@ def apply_update_with_diff_audit(
                 actor=actor.username,
                 field=field,
                 old=old,
-                new=new,
+                new=_plain(new),
             )
             setattr(obj, field, new)
             changed += 1

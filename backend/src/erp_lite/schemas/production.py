@@ -96,6 +96,7 @@ class MoCreate(BaseModel):
 class MoIssueLineIn(BaseModel):
     material_id: int
     qty: Decimal = Field(gt=0)
+    batch_id: int | None = None  # v2 批次：批次物料领料必填（路由层校验）
 
 
 class MoIssueIn(BaseModel):

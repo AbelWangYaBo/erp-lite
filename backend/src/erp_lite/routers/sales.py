@@ -10,7 +10,9 @@ from erp_lite.database import get_db
 from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     AuditRecord,
+    Batch,
     DocStatus,
+    Material,
     SalesOrder,
     SalesOrderLine,
     User,
@@ -195,8 +197,9 @@ def ship_sales_order(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="出库明细不能为空")
     line_map = {l.id: l for l in so.lines}
 
-    # 逐行校验：行归属、仓库、超发、库存充足（同一物料/仓库的本次合计需求一起校验）
-    demand: dict[tuple[int, int], Decimal] = {}
+    # 逐行校验：行归属、仓库、超发、批次（批次物料必带）、库存充足
+    # （同一物料/批次/仓库的本次合计需求一起校验；非批次物料保持 v1 物料级口径）
+    demand: dict[tuple[int, int, int | None], Decimal] = {}
     for item in body:
         line = line_map.get(item.line_id)
         if line is None:
@@ -209,23 +212,41 @@ def ship_sales_order(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"仓库不存在：{item.warehouse_id}",
             )
+        material = db.get(Material, line.material_id)
+        if material.batch_required:
+            if item.batch_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"物料 {material.code} 已启用批次管理，出库必须指定批次",
+                )
+            batch = db.get(Batch, item.batch_id)
+            if batch is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"批次不存在：{item.batch_id}",
+                )
+            if batch.material_id != line.material_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"批次 {batch.batch_no} 不属于物料 {material.code}，禁止出库",
+                )
         remaining = _d(line.qty) - _d(line.shipped_qty)
         if item.qty > remaining:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"超发出库：行剩余可发 {q4(remaining)}，本次申请 {item.qty}",
             )
-        key = (line.material_id, item.warehouse_id)
+        key = (line.material_id, item.warehouse_id, item.batch_id)
         demand[key] = demand.get(key, Decimal("0")) + item.qty
     from erp_lite.services.inventory import get_stock
 
-    for (material_id, warehouse_id), need in demand.items():
-        stock_qty, _ = get_stock(db, material_id, warehouse_id)
+    for (material_id, warehouse_id, batch_id), need in demand.items():
+        stock_qty, _ = get_stock(db, material_id, warehouse_id, batch_id=batch_id)
+        scope = f"批次 {batch_id}" if batch_id is not None else f"物料 {material_id}"
         if stock_qty < need:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"库存不足：现存量 {stock_qty}，需出库 {need}"
-                f"（物料 {material_id} / 仓库 {warehouse_id}）",
+                detail=f"库存不足：现存量 {stock_qty}，需出库 {need}（{scope} / 仓库 {warehouse_id}）",
             )
 
     for item in body:
@@ -240,6 +261,7 @@ def ship_sales_order(
             source_type=DOC_TYPE,
             source_id=so.id,
             source_line_id=line.id,
+            batch_id=item.batch_id,
         )
         line.shipped_qty = q4(_d(line.shipped_qty) + item.qty)
 

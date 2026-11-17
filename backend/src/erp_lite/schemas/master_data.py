@@ -40,6 +40,9 @@ class MaterialCreate(BaseModel):
     unit: str = Field(min_length=1, max_length=16)
     category: MaterialCategory
     default_warehouse_id: int | None = None
+    batch_required: bool = False  # v2 批次管理开关
+    udi_di: str | None = Field(default=None, max_length=64)  # UDI-DI（成品）
+    udi_pi_rule: str | None = Field(default=None, max_length=128)  # PI 组成规则（成品）
 
 
 class MaterialUpdate(MaterialCreate):
@@ -54,6 +57,9 @@ class MaterialOut(BaseModel):
     unit: str
     category: MaterialCategory
     default_warehouse_id: int | None
+    batch_required: bool
+    udi_di: str | None
+    udi_pi_rule: str | None
 
     model_config = {"from_attributes": True}
 

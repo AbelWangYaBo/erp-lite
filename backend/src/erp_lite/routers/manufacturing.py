@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
+    Batch,
     DocStatus,
     ManufacturingOrder,
     Material,
@@ -16,6 +17,7 @@ from erp_lite.models import (
     User,
     Warehouse,
 )
+from erp_lite.models.base import InspStatus
 from erp_lite.routers.common import change_status, paginate
 from erp_lite.schemas.production import (
     MoCreate,
@@ -25,6 +27,7 @@ from erp_lite.schemas.production import (
     MoReceiveIn,
 )
 from erp_lite.services.audit import write_audit, write_op_log
+from erp_lite.services.batches import get_or_create_batch, next_finished_batch_no
 from erp_lite.services.inventory import _d, get_stock, post_move, q4
 from erp_lite.services.mrp import expand_requirements, mo_completed_qty
 from erp_lite.services.numbering import next_doc_no
@@ -182,9 +185,37 @@ def issue_mo(
             status_code=status.HTTP_400_BAD_REQUEST, detail="领料明细不能为空"
         )
 
+    # v2 批次：行指定 batch_id 时（该行为叶子物料）挂到对应物料；
+    # 批次物料最终没有批次的一律 400（BOM 展开的批次子件必须逐行指定批次）
+    batch_map: dict[int, int] = {}
+    if body.lines:
+        for line in body.lines:
+            if line.batch_id is not None and line.material_id in requirements:
+                batch_map[line.material_id] = line.batch_id
+    for mid in requirements:
+        material = db.get(Material, mid)
+        if material.batch_required and mid not in batch_map:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"物料 {material.code} 已启用批次管理，领料必须指定批次",
+            )
+
     total_cost = ZERO
     for mid, qty in requirements.items():
-        stock_qty, _ = get_stock(db, mid, mo.warehouse_id)
+        batch_id = batch_map.get(mid)
+        if batch_id is not None:
+            batch = db.get(Batch, batch_id)
+            if batch is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"批次不存在：{batch_id}",
+                )
+            if batch.material_id != mid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"批次 {batch.batch_no} 不属于物料 {mid}，禁止领料",
+                )
+        stock_qty, _ = get_stock(db, mid, mo.warehouse_id, batch_id=batch_id)
         if stock_qty < qty:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -199,6 +230,7 @@ def issue_mo(
             qty=-qty,
             source_type=DOC_TYPE,
             source_id=mo.id,
+            batch_id=batch_map.get(mid),
         )
         cost = q4(-move.amount)  # 出库金额为负，成本取绝对值
         db.add(MoIssue(mo_id=mo.id, material_id=mid, qty=qty, cost_amount=cost))
@@ -252,6 +284,22 @@ def receive_mo(
         source_type=DOC_TYPE,
         source_id=mo.id,
     )
+    # v2 批次：成品物料启用批次管理时自动生成成品批次
+    # batch_no = MO 单号 + '-' + 序号。S2 阶段直接建为 qualified（成品默认合格，
+    # 保证 S2 演示链路可出库）；S3 接 QA 检验判定后改为 pending + 判定流转。
+    product = db.get(Material, mo.material_id)
+    if product.batch_required:
+        batch_no = next_finished_batch_no(db, mo.id, mo.doc_no)
+        get_or_create_batch(
+            db,
+            batch_no=batch_no,
+            material_id=mo.material_id,
+            source_type=DOC_TYPE,
+            source_id=mo.id,
+            supplier_id=None,
+            insp_status=InspStatus.qualified,
+            created_by=current_user.username,
+        )
     mo.transferred_cost = q4(_d(mo.transferred_cost) + transferred)
     mo.extra_cost = q4(_d(mo.extra_cost) + extra_cost)
     new_status = DocStatus.completed if completed + qty >= planned else DocStatus.partial

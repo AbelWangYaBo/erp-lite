@@ -126,6 +126,10 @@ class ReceiveLineIn(BaseModel):
     line_id: int
     qty: Decimal = Field(gt=0)
     warehouse_id: int
+    # v2 批次：采购入库传 batch_no（批次物料必填，路由层校验）；
+    # 销售出库传 batch_id（批次物料必填）。两者均可空，非批次物料走 v1 路径。
+    batch_no: str | None = Field(default=None, max_length=64)
+    batch_id: int | None = None
 
 
 # ---------- 库存查询 ----------
