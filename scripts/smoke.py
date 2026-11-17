@@ -17,14 +17,18 @@
 MRP 需求量取 50（若 demand=20 且 FG 库存=20，净需求为 0，不会产生任何建议）。
 """
 
+import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import httpx
 
-BASE = "http://localhost:18080"
+# v2-S6 起本地开发环境不再用 docker：默认仍打 compose 网关 18080，
+# 本地直连后端时用 SMOKE_BASE=http://localhost:8100 覆盖（此时跳过 nginx 首页检查）。
+BASE = os.environ.get("SMOKE_BASE", "http://localhost:18080")
 API = f"{BASE}/api/v1"
+VIA_GATEWAY = "18080" in BASE
 
 passed: list[str] = []
 failures: list[str] = []
@@ -70,9 +74,10 @@ def main() -> int:
     token = r.json()["token"]
     h = {"Authorization": f"Bearer {token}"}
 
-    # 首页由 web 容器 nginx 托管（验证 web 服务本身）
-    r = c.get("/")
-    check(r.status_code == 200 and "<div" in r.text, "web 首页 200（nginx 托管前端）")
+    # 首页由 web 容器 nginx 托管（验证 web 服务本身）；本地直连 8100 时无 nginx，跳过
+    if VIA_GATEWAY:
+        r = c.get("/")
+        check(r.status_code == 200 and "<div" in r.text, "web 首页 200（nginx 托管前端）")
 
     def api(method: str, path: str, body=None, **kw) -> dict:
         if body is not None:
@@ -87,6 +92,14 @@ def main() -> int:
     # v1 生产工单只支持单仓（领料/完工均在 MO 仓库），闭环共用一个仓库
     wh1 = api("POST", "/warehouses", json={"code": f"WH{suffix}", "name": "冒烟主仓库"})
     sup = api("POST", "/partners", json={"code": f"S{suffix}", "name": "冒烟供应商", "type": "supplier"})
+    # v2-S6 适配：S4 供应商资质拦截后，新供应商须先录入并审核资质才能下单
+    # （admin 兼具 partner_cert.write / partner_cert.audit，一并完成）
+    cert = api("POST", "/partner-certs", json={
+        "partner_id": sup["id"], "cert_name": "冒烟供应商资质",
+        "cert_no": f"CERT-SM-{suffix}",
+        "valid_from": str(date.today() - timedelta(days=365)),
+        "valid_until": str(date.today() + timedelta(days=365))})
+    api("POST", f"/partner-certs/{cert['id']}/audit")
     cus = api("POST", "/partners", json={"code": f"C{suffix}", "name": "冒烟客户", "type": "customer"})
     raw = api("POST", "/materials", json={
         "code": f"RAW{suffix}", "name": "冒烟螺丝", "spec": "M3×8", "unit": "个",

@@ -62,9 +62,11 @@ docker compose ps        # 三服务 Up/healthy
 
 ## 种子脚本（幂等）
 
-2 仓库（MAIN 原料仓 / FG 成品仓）、2 物料（RAW-SCREW-M3X8 螺丝 M3×8、FG-BRACKET 成品支架）、
-1 客户（CUS-001）、1 供应商（SUP-001）、FG 的 BOM（2×RAW）、演示五账号（见上表）。
-按 code 判存在，重复执行不报错、不重复插入。
+2 仓库（MAIN 原料仓 / FG 成品仓）、3 批次物料（RAW-SCREW-M3X8 螺丝 M3×8、
+SEMI-BRACKET 支架半成品、FG-BRACKET 支架成品，均 `batch_required=true`，成品带
+UDI-DI）、两层 BOM（FG→1×SEMI→2×RAW）、1 客户（CUS-001）、3 供应商（SUP-001 资质
+有效 / SUP-002 临期 +10 天 / SUP-003 已过期，各挂一张 audited 证照）、演示五账号
+（见上表）。按 code/cert_no 判存在，重复执行不报错、不重复插入。
 
 ```bash
 # compose 环境（db 未暴露宿主端口，拷进 api 容器执行）
@@ -86,7 +88,42 @@ MRP 二次运算建议转采购 → 付款核销 AP 部分 400 / 收款核销 AR
 
 ```bash
 cd backend && uv run python ../scripts/smoke.py   # 需先 docker compose up 且已建种子/空库均可
+# 本地开发（无 docker）直连 8100 时：
+cd backend && SMOKE_BASE=http://localhost:8100 uv run python ../scripts/smoke.py
 ```
+
+## v2 演示链路（GMP 场景，五角色接力）
+
+seed 后即可用五账号手工走通（或直接跑 `smoke_v2.py` 全自动验证）。按 PRD-v2 §2.5
+权限矩阵，一句话流程：
+
+> **purchase** 向 SUP-001 下 PO 并审核 → **warehouse** 分批入库（批次 LOT-xxx，入库即
+> `pending` 待检）→ **qa** 在批次台账判定 pass（`qualified` 放行）→ **production** MRP
+> 运算（只计合格批次）→ make 建议转 MO → 下达 → 按合格批次领料 → 完工入库（成品批次
+> 自动生成且合格）→ **purchase** 建 SO 并审核 → **warehouse** 选合格成品批次出库
+> （UDI-DI + PI=批号）→ **admin** 核销收付款、对账、查审计留痕。
+
+合规控制点随手可验：
+
+- 越权 403：warehouse 建 PO、production 判检验、purchase 入库、qa 建单均被拒；
+- 资质拦截 400：向 SUP-003（过期）下单在创建与审核两处都被拦，SUP-002（临期）进预警列表；
+- 放行拦截 400：pending / rejected 批次不能领料、不能出库，可用量只计 qualified；
+- 正反向追溯：成品批次正查逐层展开到 SEMI/RAW 批次并带供应商；原料批次反查召回
+  所有下游成品批次（全程带单据链接）。
+
+```bash
+# smoke_v2 默认打 http://localhost:8100（本地开发后端）
+cd backend && uv run python ../scripts/smoke_v2.py   # 五角色全链路 + 越权/合规拦截 + 追溯断言
+```
+
+## GMP 控制点说明（定位声明）
+
+v2 将《医疗器械生产质量管理规范》中信息化系统最相关的五个控制点落成系统能力：
+**批次追溯**（批次台账 + 正反向追溯 API）、**职责分离**（RBAC 五角色 + 全操作审计带
+角色）、**放行受控**（检验合格方可领料/出库，MRP 可用量只计合格批次）、**资质受控**
+（供应商证照有效期拦截 + 临期预警）、**标识唯一**（成品 UDI-DI + PI=批号随出库留痕）。
+**本系统仅为个人自用演示/参考实现，系统能力落地参考，不构成任何 GMP 合规认证**；
+法规定性口径归法规/RA，系统只保证「控制点可执行、证据可留存」。
 
 ## 备份与恢复
 
@@ -101,6 +138,6 @@ cat backup_20260101.sql | docker compose exec -T db psql -U erp -d erp
 ## 测试
 
 ```bash
-cd backend && env -u PYTHONPATH uv run pytest -q   # v1 140 用例 + v2 RBAC 37 用例
+cd backend && env -u PYTHONPATH uv run pytest -q   # 256 用例全绿（v1 进销存 + v2 批次/检验/资质/RBAC）
 cd web && npm run build
 ```

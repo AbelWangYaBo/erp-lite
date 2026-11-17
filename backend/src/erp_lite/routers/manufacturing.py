@@ -153,7 +153,9 @@ def issue_mo(
     _require_status(mo, (DocStatus.approved, DocStatus.partial), "领料")
     planned = _d(mo.planned_qty)
     if body.lines:
-        # 指定行：物料必须存在（引用校验）；有 BOM 则按 BOM 递归展开，无 BOM 直接采用
+        # 指定行：物料必须存在（引用校验）；指定 batch_id 的行视为“整批领用”
+        # （v2-S6：中间件如 SEMI 自带 BOM 时仍可按批次直领，不再向下展开）；
+        # 未指定 batch_id 的行按 BOM 递归展开，无 BOM 直接采用
         requirements: dict[int, Decimal] = {}
         for line in body.lines:
             if db.get(Material, line.material_id) is None:
@@ -161,10 +163,15 @@ def issue_mo(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"物料不存在：{line.material_id}",
                 )
-            for mid, qty in expand_requirements(
-                db, line.material_id, _d(line.qty)
-            ).items():
-                requirements[mid] = q4(requirements.get(mid, ZERO) + qty)
+            if line.batch_id is not None:
+                requirements[line.material_id] = q4(
+                    requirements.get(line.material_id, ZERO) + _d(line.qty)
+                )
+            else:
+                for mid, qty in expand_requirements(
+                    db, line.material_id, _d(line.qty)
+                ).items():
+                    requirements[mid] = q4(requirements.get(mid, ZERO) + qty)
     else:
         # 按 BOM × 本次完工比例展开；qty 缺省=整单计划量
         ratio_qty = _d(body.qty) if body.qty is not None else planned

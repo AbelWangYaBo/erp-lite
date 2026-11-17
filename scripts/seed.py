@@ -8,9 +8,11 @@
   docker compose cp scripts/seed.py api:/app/scripts/seed.py
   docker compose exec api uv run python scripts/seed.py
 
-种子内容：2 仓库、2 物料（RAW 螺丝 M3×8 / FG 成品支架）、1 客户、1 供应商、
-FG 的 BOM（2×RAW）、5 个演示账号（admin/admin123、purchase/p123、warehouse/w123、
-production/p123456、qa/q123，账号名即角色名，密码错开避免同密风险）。
+种子内容：2 仓库、3 物料（RAW 螺丝 M3×8 / SEMI 支架半成品 / FG 支架成品，三层
+均 batch_required=True，FG 带 UDI-DI）、两层 BOM（FG→1×SEMI→2×RAW）、1 客户、
+3 供应商（有效/临期(+10天)/过期(-1天) 资质各一）、5 个演示账号（admin/admin123、
+purchase/p123、warehouse/w123、production/p123456、qa/q123，账号名即角色名，
+密码错开避免同密风险）。
 """
 
 import os
@@ -64,16 +66,33 @@ def main() -> None:
         )
         wh_fg = get_or_create(db, Warehouse, "code", "FG", name="成品仓")
 
+        # v2-S6 演示批次链物料：RAW/SEMI/FG 全部 batch_required=True，
+        # FG 带 UDI（udi_di + PI 规则=批号）。对已存在物料也补齐开关字段（幂等回填）。
         raw = get_or_create(
             db, Material, "code", "RAW-SCREW-M3X8",
             name="螺丝 M3×8", spec="GB/T 819", unit="个",
             category="raw", default_warehouse_id=wh_main.id,
+            batch_required=True,
         )
+        raw.batch_required = True
+        semi = get_or_create(
+            db, Material, "code", "SEMI-BRACKET",
+            name="支架半成品", spec="A-01-S", unit="个",
+            category="semi", default_warehouse_id=wh_main.id,
+            batch_required=True,
+        )
+        semi.batch_required = True
         fg = get_or_create(
             db, Material, "code", "FG-BRACKET",
-            name="成品支架", spec="A-01", unit="个",
-            category="finished", default_warehouse_id=wh_fg.id,
+            name="支架成品", spec="A-01", unit="个",
+            category="finished", default_warehouse_id=wh_main.id,
+            batch_required=True, udi_di="6.9712345678901", udi_pi_rule="批号",
         )
+        # MO 领料/完工单仓执行：整条演示链统一在 MAIN 仓跑通（与 v1 冒烟同理）
+        fg.default_warehouse_id = wh_main.id
+        fg.batch_required = True
+        fg.udi_di = "6.9712345678901"
+        fg.udi_pi_rule = "批号"
 
         get_or_create(
             db, Partner, "code", "SUP-001",
@@ -122,14 +141,27 @@ def main() -> None:
             )
             created.append(f"partner_certs:{sup_code}:{cert_no}")
 
-        # FG 的 BOM：2×RAW（一物一 BOM，已存在即跳过）
-        bom = db.scalar(select(Bom).where(Bom.material_id == fg.id))
-        if bom is None:
-            bom = Bom(material_id=fg.id, status="active")
-            db.add(bom)
-            db.flush()
-            db.add(BomLine(bom_id=bom.id, material_id=raw.id, qty_per=2, loss_pct=0))
-            created.append("boms:FG-BRACKET(2×RAW-SCREW-M3X8)")
+        # v2-S6 两层演示 BOM：FG → 1×SEMI → 2×RAW（一物一 BOM）。
+        # 若历史库存在旧版「FG 2×RAW」单层 BOM，归一化为两层链（演示一致性）。
+        def ensure_bom(material: Material, line_specs: list[tuple[int, int]]) -> None:
+            bom = db.scalar(select(Bom).where(Bom.material_id == material.id))
+            if bom is None:
+                bom = Bom(material_id=material.id, status="active")
+                db.add(bom)
+                db.flush()
+                created.append(f"boms:{material.code}")
+            current = sorted((l.material_id, l.qty_per) for l in bom.lines)
+            target = sorted(line_specs)
+            if current != target:
+                for line in list(bom.lines):
+                    db.delete(line)
+                db.flush()
+                for mid, qty_per in line_specs:
+                    db.add(BomLine(bom_id=bom.id, material_id=mid, qty_per=qty_per, loss_pct=0))
+                created.append(f"boms:{material.code}(重置为两层链结构)")
+
+        ensure_bom(semi, [(raw.id, 2)])
+        ensure_bom(fg, [(semi.id, 1)])
 
         # v2 演示五账号：账号名即角色名，逐个按 username 判存在（幂等）。
         # 密码错开避免同密风险；改角色后需重新登录以刷新 JWT 里的 role claim。

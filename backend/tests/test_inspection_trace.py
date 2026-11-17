@@ -660,3 +660,41 @@ def test_trace_batch_404(client, db_session):
     db_session.commit()
     assert client.get("/api/v1/batches/999999/trace-forward").status_code == 404
     assert client.get("/api/v1/batches/999999/trace-backward").status_code == 404
+
+
+def test_issue_intermediate_batch_with_bom(client, db_session):
+    """v2-S6：中间件（SEMI）自带 BOM 时按批次直领不再向下展开（整批领用）。
+
+    修复前：issue 行指定 batch_id 仍按 BOM 递归展开到 RAW 叶子，
+    导致 SEMI 批次无法被 FG 工单领用（两层链在 MRP 场景下断裂）。
+    """
+    raw_mat, sup, wh, raw_batch = _receive_batch(client, db_session, "IB1", "LOT-IB")
+    assert _inspect(client, raw_batch.id, "pass").status_code == 200
+    semi = _mk_mat(db_session, "IBSEMI", category=MaterialCategory.semi)
+    fg = _mk_mat(db_session, "IBFG", category=MaterialCategory.finished)
+    db_session.commit()
+    # SEMI 自带 BOM（2×RAW）：MRP 可对 SEMI 出 make 建议的真实两层结构
+    assert client.put(
+        f"/api/v1/boms/{semi.id}",
+        json={"lines": [{"material_id": raw_mat.id, "qty_per": 2}]},
+    ).status_code == 200
+    assert client.put(
+        f"/api/v1/boms/{fg.id}",
+        json={"lines": [{"material_id": semi.id, "qty_per": 1}]},
+    ).status_code == 200
+    mo1 = _mk_mo(client, semi.id, wh.id, 5)
+    assert _issue(
+        client, mo1["id"], [{"material_id": raw_mat.id, "qty": 10, "batch_id": raw_batch.id}]
+    ).status_code == 200
+    assert _receive_mo(client, mo1["id"], 5).status_code == 200
+    semi_batch = db_session.scalar(select(Batch).where(Batch.material_id == semi.id))
+    mo2 = _mk_mo(client, fg.id, wh.id, 5)
+    resp = _issue(
+        client, mo2["id"], [{"material_id": semi.id, "qty": 5, "batch_id": semi_batch.id}]
+    )
+    assert resp.status_code == 200, resp.text
+    assert _receive_mo(client, mo2["id"], 5).status_code == 200
+    fg_batch = db_session.scalar(select(Batch).where(Batch.material_id == fg.id))
+    links = client.get(f"/api/v1/batches/{fg_batch.id}/trace-forward").json()["links"]
+    nos = [l["to_batch"]["batch_no"] for l in links]
+    assert semi_batch.batch_no in nos and raw_batch.batch_no in nos
