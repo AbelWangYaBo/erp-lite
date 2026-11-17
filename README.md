@@ -27,7 +27,7 @@ uv run uvicorn erp_lite.main:app --reload --port 8100
 cd web
 npm install
 VITE_API_TARGET=http://localhost:8100 npm run dev
-# 访问 http://localhost:5173
+# 访问 http://localhost:15173（5173 留给字典应用，strictPort 被占时启动报错不会漂移）
 ```
 
 ## Docker 一键启动
