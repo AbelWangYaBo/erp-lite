@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user
+from conftest import grant_supplier_cert
 from erp_lite.main import app
 from erp_lite.models import Batch, InventoryMove, Material, MaterialCategory
 from erp_lite.models.base import InspStatus
@@ -44,6 +45,9 @@ def _mk_mat(db, code, batch_required=False, category=MaterialCategory.raw, **kw)
 def _mk_partner(db, code, ptype):
     p = Partner(code=code, name=f"单位{code}", type=ptype)
     db.add(p)
+    if ptype == PartnerType.supplier:
+        db.flush()
+        grant_supplier_cert(db, p.id)  # V2-S4 资质拦截：供应商默认资质合规
     return p
 
 

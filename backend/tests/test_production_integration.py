@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
+from conftest import grant_supplier_cert
 from erp_lite.models import (
     ManufacturingOrder,
     Material,
@@ -27,6 +28,7 @@ def test_full_production_loop(client, db_session):
     sup = Partner(code="SUP1", name="供应商甲", type=PartnerType.supplier)
     db_session.add_all([raw, fg, sup])
     db_session.commit()
+    grant_supplier_cert(db_session, sup.id)  # V2-S4 资质拦截：供应商默认资质合规
 
     # 2) 采购 100kg 原料 @10，审核+入库 → 现存 100，金额 1000，均价 10
     resp = client.post(

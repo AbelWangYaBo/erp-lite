@@ -1,9 +1,17 @@
 """主数据：物料 / 仓库 / 往来单位。"""
 
-from sqlalchemy import ForeignKey, String
+from datetime import date, datetime
+
+from sqlalchemy import Date, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from erp_lite.models.base import Base, MaterialCategory, PartnerType, str_enum
+from erp_lite.models.base import (
+    Base,
+    CertStatus,
+    MaterialCategory,
+    PartnerType,
+    str_enum,
+)
 
 
 class Warehouse(Base):
@@ -42,3 +50,27 @@ class Partner(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     type: Mapped[PartnerType] = mapped_column(str_enum(PartnerType), nullable=False)
     contact: Mapped[str | None] = mapped_column(String(128), default=None)
+
+
+class PartnerCert(Base):
+    """供应商资质证照（V2-S4 GMP 采购控制）：仅 supplier 可挂，审核后用于 PO 拦截。"""
+
+    __tablename__ = "partner_certs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    partner_id: Mapped[int] = mapped_column(
+        ForeignKey("partners.id"), index=True, nullable=False
+    )
+    cert_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    cert_no: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    issuer: Mapped[str | None] = mapped_column(String(128), default=None)
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_until: Mapped[date] = mapped_column(Date, nullable=False)
+    file_ref: Mapped[str | None] = mapped_column(String(255), default=None)  # 扫描件路径引用
+    audit_status: Mapped[CertStatus] = mapped_column(
+        str_enum(CertStatus), default=CertStatus.draft, nullable=False
+    )
+    audited_by: Mapped[str | None] = mapped_column(String(64), default=None)
+    audited_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+    partner = relationship("Partner")

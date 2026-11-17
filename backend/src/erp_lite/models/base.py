@@ -56,6 +56,13 @@ class InspStatus(str, enum.Enum):
     closed = "closed"
 
 
+class CertStatus(str, enum.Enum):
+    """供应商资质审核状态（V2-S4：录入为 draft，QA 审核后 audited 才生效）。"""
+
+    draft = "draft"
+    audited = "audited"
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

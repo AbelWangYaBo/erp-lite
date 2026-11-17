@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
 
+from conftest import grant_supplier_cert
 from erp_lite.config import settings
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user, require_action
@@ -44,6 +45,7 @@ def _seed_refs(db_session):
     sup = Partner(code="SUP1", name="华东供应商", type=PartnerType.supplier)
     db_session.add_all([wh, mat, sup])
     db_session.commit()
+    grant_supplier_cert(db_session, sup.id)  # V2-S4 资质拦截：供应商默认资质合规
     return wh, mat, sup
 
 

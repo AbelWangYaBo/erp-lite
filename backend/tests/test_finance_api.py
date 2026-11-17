@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
+from conftest import grant_supplier_cert
 from erp_lite.models import (
     Material,
     MaterialCategory,
@@ -37,6 +38,8 @@ def _seed(db_session):
     sup2 = get_or_create(Partner, code="SUP2", name="南方供应商", type=PartnerType.supplier)
     cus = get_or_create(Partner, code="CUS1", name="北方客户", type=PartnerType.customer)
     db_session.commit()
+    grant_supplier_cert(db_session, sup.id)  # V2-S4 资质拦截：供应商默认资质合规
+    grant_supplier_cert(db_session, sup2.id)
     return wh, mat, sup, sup2, cus
 
 

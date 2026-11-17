@@ -15,6 +15,7 @@ production/p123456、qa/q123，账号名即角色名，密码错开避免同密�
 
 import os
 import sys
+from datetime import date, timedelta
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -25,7 +26,16 @@ try:
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend", "src"))
 
-from erp_lite.models import Bom, BomLine, Material, Partner, User, Warehouse  # noqa: E402
+from erp_lite.models import (  # noqa: E402
+    Bom,
+    BomLine,
+    CertStatus,
+    Material,
+    Partner,
+    PartnerCert,
+    User,
+    Warehouse,
+)
 from erp_lite.services.security import hash_password  # noqa: E402
 
 DATABASE_URL = os.environ.get(
@@ -70,9 +80,47 @@ def main() -> None:
             name="标准件供应商", type="supplier", contact="李供应商",
         )
         get_or_create(
+            db, Partner, "code", "SUP-002",
+            name="临期资质供应商", type="supplier", contact="赵临期",
+        )
+        get_or_create(
+            db, Partner, "code", "SUP-003",
+            name="资质过期供应商", type="supplier", contact="孙过期",
+        )
+        get_or_create(
             db, Partner, "code", "CUS-001",
             name="机械加工客户", type="customer", contact="王客户",
         )
+
+        # v2-S4 供应商资质演示数据（幂等：按 cert_no 判存在）：
+        #   SUP-001 有效（2027-12-31，可正常下单）
+        #   SUP-002 临期（+10 天，进临期预警列表）
+        #   SUP-003 已过期（昨天到期，PO 下单被拦截）
+        today = date.today()
+        demo_certs = [
+            ("SUP-001", "CERT-DEMO-001", date(2027, 12, 31), CertStatus.audited),
+            ("SUP-002", "CERT-DEMO-002", today + timedelta(days=10), CertStatus.audited),
+            ("SUP-003", "CERT-DEMO-003", today - timedelta(days=1), CertStatus.audited),
+        ]
+        for sup_code, cert_no, valid_until, status in demo_certs:
+            if db.scalar(select(PartnerCert).where(PartnerCert.cert_no == cert_no)) is not None:
+                continue
+            sup = db.scalar(select(Partner).where(Partner.code == sup_code))
+            db.add(
+                PartnerCert(
+                    partner_id=sup.id,
+                    cert_name="医疗器械生产许可证",
+                    cert_no=cert_no,
+                    issuer="省药品监督管理局",
+                    valid_from=valid_until - timedelta(days=730),
+                    valid_until=valid_until,
+                    file_ref=f"/data/certs/{cert_no}.pdf",
+                    audit_status=status,
+                    audited_by="qa",
+                    audited_at=None,
+                )
+            )
+            created.append(f"partner_certs:{sup_code}:{cert_no}")
 
         # FG 的 BOM：2×RAW（一物一 BOM，已存在即跳过）
         bom = db.scalar(select(Bom).where(Bom.material_id == fg.id))

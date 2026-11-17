@@ -31,6 +31,7 @@ from erp_lite.schemas.orders import (
 from erp_lite.schemas.orders import OrderLineCreate as _Line
 from erp_lite.services.audit import write_audit, write_op_log
 from erp_lite.services.batches import get_or_create_batch
+from erp_lite.services.certs import ensure_supplier_certified
 from erp_lite.services.inventory import _d, q4, post_move
 from erp_lite.services.numbering import next_doc_no
 from erp_lite.services.orders import (
@@ -118,6 +119,8 @@ def create_purchase_order(
     current_user: User = Depends(get_current_user),
 ) -> PurchaseOrder:
     validate_order_refs(db, payload.partner_id, payload.lines)
+    # v2-S4 资质拦截：供应商须有 audited 且未过期证照（supplier 之外不校验）
+    ensure_supplier_certified(db, payload.partner_id, current_user.username)
     doc_no = next_doc_no(db, "PO", payload.order_date)
     po = create_order(
         db,
@@ -183,6 +186,8 @@ def approve_purchase_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="仅草稿状态的采购订单可审核"
         )
+    # v2-S4 资质拦截：审核时点复核（建单到审核期间证照可能过期）
+    ensure_supplier_certified(db, po.partner_id, current_user.username)
     change_status(
         db, po, DOC_TYPE, DocStatus.approved, current_user.username,
         f"审核采购订单：{po.doc_no}",

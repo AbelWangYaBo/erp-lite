@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from conftest import grant_supplier_cert
 from erp_lite.models import (
     InventoryMove,
     Material,
@@ -26,6 +27,7 @@ def _seed(db_session):
     cus = Partner(code="CUS1", name="北方客户", type=PartnerType.customer)
     db_session.add_all([wh, wh2, mat, mat2, sup, cus])
     db_session.commit()
+    grant_supplier_cert(db_session, sup.id)  # V2-S4 资质拦截适配
     return wh, wh2, mat, mat2, sup, cus
 
 

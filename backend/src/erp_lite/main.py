@@ -16,6 +16,7 @@ from erp_lite.routers import manufacturing as manufacturing_router
 from erp_lite.routers import materials as materials_router
 from erp_lite.routers import mrp as mrp_router
 from erp_lite.routers import partners as partners_router
+from erp_lite.routers import partner_certs as partner_certs_router
 from erp_lite.routers import purchase as purchase_router
 from erp_lite.routers import sales as sales_router
 from erp_lite.routers import users as users_router
@@ -37,6 +38,7 @@ app.include_router(audit_router.router)
 app.include_router(materials_router.router)
 app.include_router(warehouses_router.router)
 app.include_router(partners_router.router)
+app.include_router(partner_certs_router.router)
 app.include_router(purchase_router.router)
 app.include_router(sales_router.router)
 app.include_router(inventory_router.router)

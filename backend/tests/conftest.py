@@ -1,5 +1,6 @@
 """测试基建：SQLite 内存库 + DependencyOverrides 测试替身。"""
 
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user
 from erp_lite.main import app
-from erp_lite.models import Base
+from erp_lite.models import Base, CertStatus, PartnerCert
 
 
 @pytest.fixture()
@@ -52,3 +53,27 @@ def anon_client(db_session):
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
+
+
+def grant_supplier_cert(db, partner_id: int) -> None:
+    """给供应商补一张 audited 且未过期的资质证照。
+
+    V2-S4 资质拦截的语义适配：v1 既有 PO 流程测试的供应商默认资质合规，
+    业务意图（采购全链路）不变；拦截行为本身由 test_partner_certs.py 专测。
+    """
+    today = date.today()
+    db.add(
+        PartnerCert(
+            partner_id=partner_id,
+            cert_name="测试资质",
+            cert_no=f"CERT-{partner_id}-{today.isoformat()}",
+            issuer="测试发证机关",
+            valid_from=today - timedelta(days=365),
+            valid_until=today + timedelta(days=365),
+            file_ref="/tmp/cert.pdf",
+            audit_status=CertStatus.audited,
+            audited_by="tester",
+            audited_at=datetime.now(),
+        )
+    )
+    db.commit()

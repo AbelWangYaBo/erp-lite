@@ -2,6 +2,7 @@
 
 from erp_lite.models.base import (
     Base,
+    CertStatus,
     DocMixin,
     DocStatus,
     InspStatus,
@@ -12,7 +13,7 @@ from erp_lite.models.base import (
     TimestampMixin,
 )
 from erp_lite.models.users import Role, User
-from erp_lite.models.master_data import Material, Partner, Warehouse
+from erp_lite.models.master_data import Material, Partner, PartnerCert, Warehouse
 from erp_lite.models.batch import Batch, InspectionRecord
 from erp_lite.models.purchase import PurchaseOrder, PurchaseOrderLine
 from erp_lite.models.sales import SalesOrder, SalesOrderLine
@@ -43,6 +44,8 @@ __all__ = [
     "Warehouse",
     "Material",
     "Partner",
+    "PartnerCert",
+    "CertStatus",
     "Batch",
     "InspectionRecord",
     "PurchaseOrder",
