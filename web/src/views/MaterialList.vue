@@ -14,7 +14,7 @@ const formRef = ref()
 const dialogVisible = ref(false)
 const editingId = ref(null)
 
-const blank = { code: '', name: '', spec: '', unit: '', category: 'raw', default_warehouse_id: null }
+const blank = { code: '', name: '', spec: '', unit: '', category: 'raw', default_warehouse_id: null, batch_required: false, udi_di: '', udi_pi_rule: '' }
 const form = reactive({ ...blank })
 const rules = {
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
@@ -51,6 +51,9 @@ async function submit() {
   await formRef.value.validate()
   const payload = { ...form }
   if (!payload.default_warehouse_id) payload.default_warehouse_id = null
+  payload.batch_required = !!payload.batch_required
+  payload.udi_di = payload.udi_di || null
+  payload.udi_pi_rule = payload.udi_pi_rule || null
   if (editingId.value) {
     await request.put(`/materials/${editingId.value}`, payload)
     ElMessage.success('已保存')
@@ -141,6 +144,18 @@ onMounted(async () => {
             <el-option v-for="w in warehouses" :key="w.id" :label="`${w.code} ${w.name}`" :value="w.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="批次管理">
+          <el-switch v-model="form.batch_required" active-text="启用" inactive-text="关闭" />
+          <span class="field-tip">启用后出入库必须指定批次，且仅 QA 合格批次可出库/领料</span>
+        </el-form-item>
+        <template v-if="form.category === 'finished'">
+          <el-form-item label="UDI-DI">
+            <el-input v-model="form.udi_di" placeholder="器械唯一标识 DI（成品）" maxlength="64" />
+          </el-form-item>
+          <el-form-item label="PI 组成规则">
+            <el-input v-model="form.udi_pi_rule" placeholder="生产标识 PI 组成规则（成品，可选）" maxlength="128" />
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -158,5 +173,10 @@ onMounted(async () => {
 }
 .spacer {
   flex: 1;
+}
+.field-tip {
+  margin-left: 12px;
+  color: #999;
+  font-size: 12px;
 }
 </style>

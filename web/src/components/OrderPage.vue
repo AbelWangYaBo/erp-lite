@@ -4,13 +4,23 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
 import StatusTag from '@/components/StatusTag.vue'
+import { useAuthStore } from '@/stores/auth'
 import { fmtMoney, fmtTime, today } from '@/utils/format'
 
+const auth = useAuthStore()
 const props = defineProps({ kind: { type: String, required: true } })
 const isPO = computed(() => props.kind === 'purchase')
 const base = computed(() => (isPO.value ? '/purchase-orders' : '/sales-orders'))
 const inOutLabel = computed(() => (isPO.value ? '入库' : '出库'))
 const qtyField = computed(() => (isPO.value ? 'received_qty' : 'shipped_qty'))
+// 按钮级权限（PRD-v2 §2.5 矩阵）
+const canCreate = computed(() => auth.has(isPO.value ? 'po.create' : 'so.create'))
+const actionAuth = {
+  approve: computed(() => auth.has(isPO.value ? 'po.approve' : 'so.approve')),
+  void: computed(() => auth.has(isPO.value ? 'po.void' : 'so.void')),
+  close: computed(() => auth.has(isPO.value ? 'po.close' : 'so.close')),
+  inOut: computed(() => auth.has(isPO.value ? 'po.receive' : 'so.ship')),
+}
 
 // ---------- 列表 ----------
 const list = ref([])
@@ -141,12 +151,15 @@ async function doAction(action) {
   load()
 }
 
-// ---------- 入库/出库（行级可分批录入数量） ----------
+// ---------- 入库/出库（行级可分批录入数量；批次物料必带批次） ----------
 const inOutVisible = ref(false)
 const inOutRows = ref([])
+// SO 出库用：material_id → qualified 批次下拉
+const batchOptions = ref({})
 
 function openInOut() {
   inOutRows.value = (detail.value.lines || []).map((l) => {
+    const material = materials.value.find((m) => m.id === l.material_id)
     const remaining = Number(l.qty) - Number(l[qtyField.value])
     return {
       line_id: l.id,
@@ -156,19 +169,55 @@ function openInOut() {
       remaining,
       warehouse_id: l.warehouse_id,
       input_qty: remaining > 0 ? remaining : 0,
+      // v2 批次：批次物料 PO 入库填 batch_no / SO 出库选 qualified batch_id
+      needBatch: !!material?.batch_required,
+      batch_no: '',
+      batch_id: null,
     }
   })
+  batchOptions.value = {}
   inOutVisible.value = true
+  if (!isPO.value) loadQualifiedBatches()
+}
+
+// 合格批次下拉（拉 /batches?material_id=&insp_status=qualified）
+async function loadQualifiedBatches() {
+  const ids = [...new Set(inOutRows.value.filter((r) => r.needBatch).map((r) => r.material_id))]
+  await Promise.all(
+    ids.map(async (mid) => {
+      try {
+        const d = await request.get('/batches', {
+          params: { material_id: mid, insp_status: 'qualified', page: 1, page_size: 100 },
+          silent: true,
+        })
+        batchOptions.value[mid] = d.items
+      } catch {
+        batchOptions.value[mid] = []
+      }
+    }),
+  )
 }
 
 async function submitInOut() {
-  const body = inOutRows.value
-    .filter((r) => Number(r.input_qty) > 0)
-    .map((r) => ({ line_id: r.line_id, qty: r.input_qty, warehouse_id: r.warehouse_id }))
-  if (!body.length) {
+  const selected = inOutRows.value.filter((r) => Number(r.input_qty) > 0)
+  if (!selected.length) {
     ElMessage.warning('请至少为一行录入本次数量')
     return
   }
+  // 批次物料必填批次
+  const missing = selected.find((r) => r.needBatch && (isPO.value ? !r.batch_no?.trim() : !r.batch_id))
+  if (missing) {
+    ElMessage.warning(`物料「${mlabel(missing.material_id)}」已启用批次管理，${inOutLabel.value}必须${isPO.value ? '填写批次号' : '选择合格批次'}`)
+    return
+  }
+  const body = selected.map((r) => {
+    const item = { line_id: r.line_id, qty: r.input_qty, warehouse_id: r.warehouse_id }
+    if (r.needBatch) {
+      if (isPO.value) item.batch_no = r.batch_no.trim()
+      else item.batch_id = r.batch_id
+    }
+    return item
+  })
   const over = body.find((r) => {
     const row = inOutRows.value.find((x) => x.line_id === r.line_id)
     return Number(r.qty) > Number(row.remaining)
@@ -178,7 +227,25 @@ async function submitInOut() {
     return
   }
   await request.post(`${base.value}/${detail.value.id}/${isPO.value ? 'receive' : 'ship'}`, body)
-  ElMessage.success(`${inOutLabel.value}成功`)
+  // SO 成品出库：提示带 UDI-DI + 批号（GMP 追溯信息）
+  if (isPO.value) {
+    const batches = selected.filter((r) => r.needBatch).map((r) => `${mlabel(r.material_id)} 批次 ${r.batch_no.trim()}`)
+    ElMessage.success(`入库成功${batches.length ? '：' + batches.join('；') : ''}`)
+  } else {
+    const infos = selected
+      .filter((r) => r.needBatch)
+      .map((r) => {
+        const m = materials.value.find((x) => x.id === r.material_id)
+        const b = (batchOptions.value[r.material_id] || []).find((x) => x.id === r.batch_id)
+        const udi = m?.udi_di ? `UDI-DI ${m.udi_di}` : 'UDI-DI 未登记'
+        return `${m ? m.code : r.material_id}（${udi} / 批次 ${b?.batch_no || r.batch_id}）`
+      })
+    ElMessage({
+      type: 'success',
+      message: infos.length ? `出库成功：${infos.join('；')}` : '出库成功',
+      duration: 6000,
+    })
+  }
   inOutVisible.value = false
   detail.value = await request.get(`${base.value}/${detail.value.id}`)
   load()
@@ -211,7 +278,7 @@ onMounted(async () => {
       <el-input v-model="query.keyword" placeholder="单号搜索" clearable style="width: 200px" @keyup.enter="onSearch" />
       <el-button type="primary" @click="onSearch">搜索</el-button>
       <span class="spacer" />
-      <el-button type="primary" @click="openCreate">新建{{ isPO ? '采购' : '销售' }}订单</el-button>
+      <el-button v-if="canCreate" type="primary" @click="openCreate">新建{{ isPO ? '采购' : '销售' }}订单</el-button>
     </div>
     <el-table :data="list" border size="small" v-loading="loading">
       <el-table-column prop="doc_no" label="单号" min-width="130" />
@@ -322,10 +389,10 @@ onMounted(async () => {
               <el-descriptions-item label="备注" :span="3">{{ detail.remark || '-' }}</el-descriptions-item>
             </el-descriptions>
             <div class="actions">
-              <el-button v-if="canApprove(detail.status)" type="primary" size="small" @click="doAction('approve')">审核</el-button>
-              <el-button v-if="canInOut(detail.status)" type="success" size="small" @click="openInOut">{{ inOutLabel }}</el-button>
-              <el-button v-if="canClose(detail.status)" type="warning" size="small" @click="doAction('close')">关闭</el-button>
-              <el-button v-if="canVoid(detail.status)" type="danger" size="small" @click="doAction('void')">作废</el-button>
+              <el-button v-if="canApprove(detail.status) && actionAuth.approve.value" type="primary" size="small" @click="doAction('approve')">审核</el-button>
+              <el-button v-if="canInOut(detail.status) && actionAuth.inOut.value" type="success" size="small" @click="openInOut">{{ inOutLabel }}</el-button>
+              <el-button v-if="canClose(detail.status) && actionAuth.close.value" type="warning" size="small" @click="doAction('close')">关闭</el-button>
+              <el-button v-if="canVoid(detail.status) && actionAuth.void.value" type="danger" size="small" @click="doAction('void')">作废</el-button>
             </div>
           </div>
 
@@ -396,6 +463,36 @@ onMounted(async () => {
             <el-select v-model="row.warehouse_id" size="small">
               <el-option v-for="w in warehouses" :key="w.id" :label="w.name" :value="w.id" />
             </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="isPO" label="批次号" width="150">
+          <template #default="{ row }">
+            <el-input
+              v-if="row.needBatch"
+              v-model="row.batch_no"
+              size="small"
+              placeholder="必填"
+            />
+            <span v-else style="color:#999">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else label="出库批次" width="170">
+          <template #default="{ row }">
+            <el-select
+              v-if="row.needBatch"
+              v-model="row.batch_id"
+              size="small"
+              filterable
+              placeholder="选合格批次"
+            >
+              <el-option
+                v-for="b in batchOptions[row.material_id] || []"
+                :key="b.id"
+                :label="b.batch_no"
+                :value="b.id"
+              />
+            </el-select>
+            <span v-else style="color:#999">—</span>
           </template>
         </el-table-column>
       </el-table>

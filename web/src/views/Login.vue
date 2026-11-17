@@ -2,8 +2,8 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import request from '@/api/request'
 import { useAuthStore } from '@/stores/auth'
+import { DEMO_ACCOUNTS } from '@/constants'
 
 const router = useRouter()
 const route = useRoute()
@@ -24,8 +24,8 @@ async function onSubmit() {
   }
   loading.value = true
   try {
-    const d = await request.post('/auth/login', { username: form.username, password: form.password })
-    auth.setAuth(d.token, form.username)
+    // 登录后立即拉取 /auth/me 存 role + actions，供菜单/按钮显隐
+    await auth.login(form.username, form.password)
     ElMessage.success('登录成功')
     router.push(route.query.redirect || '/')
   } catch {
@@ -33,6 +33,12 @@ async function onSubmit() {
   } finally {
     loading.value = false
   }
+}
+
+// 演示快捷角色：一键填入凭据（仅演示环境）
+function quickFill(acc) {
+  form.username = acc.username
+  form.password = acc.password
 }
 </script>
 
@@ -51,6 +57,19 @@ async function onSubmit() {
           登 录
         </el-button>
       </el-form>
+      <el-divider>演示账号快捷入口</el-divider>
+      <div class="quick-roles">
+        <el-button
+          v-for="acc in DEMO_ACCOUNTS"
+          :key="acc.username"
+          size="small"
+          plain
+          @click="quickFill(acc)"
+        >
+          {{ acc.label }}
+        </el-button>
+      </div>
+      <p class="demo-note">演示凭据仅演示环境使用</p>
     </el-card>
   </div>
 </template>
@@ -69,5 +88,17 @@ async function onSubmit() {
 .title {
   text-align: center;
   margin: 0 0 20px;
+}
+.quick-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.demo-note {
+  color: #999;
+  font-size: 12px;
+  text-align: center;
+  margin: 12px 0 0;
 }
 </style>

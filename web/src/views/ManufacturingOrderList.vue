@@ -4,7 +4,10 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
 import StatusTag from '@/components/StatusTag.vue'
+import { useAuthStore } from '@/stores/auth'
 import { fmtMoney } from '@/utils/format'
+
+const auth = useAuthStore()
 
 const list = ref([])
 const total = ref(0)
@@ -93,11 +96,19 @@ const canReceive = (s) => ['approved', 'partial'].includes(s)
 const canClose = (s) => ['approved', 'partial', 'completed'].includes(s)
 
 const ACTION_TEXT = { approve: '下达', close: '关闭' }
+// 按钮级权限（PRD-v2 §2.5：MO 建改审领产 production/admin）
+const canCreate = computed(() => auth.has('mo.create'))
+const actionAuth = {
+  approve: computed(() => auth.has('mo.release')),
+  issue: computed(() => auth.has('mo.issue')),
+  receive: computed(() => auth.has('mo.receive')),
+  close: computed(() => auth.has('mo.close')),
+}
 
 async function doAction(action) {
   const text = ACTION_TEXT[action]
   await ElMessageBox.confirm(`确认${text}该生产工单？`, '操作确认', { type: 'warning' })
-  await request.post(`/manufacturing-orders/${detail.value.id}/approve`)
+  await request.post(`/manufacturing-orders/${detail.value.id}/${action}`)
   ElMessage.success(`${text}成功`)
   detail.value = await request.get(`/manufacturing-orders/${detail.value.id}`)
   load()
@@ -106,15 +117,34 @@ async function doAction(action) {
 // ---------- 领料 ----------
 const issueVisible = ref(false)
 const issueRows = ref([])
-const blankIssue = () => ({ material_id: null, qty: 1 })
+// material_id → qualified 批次下拉（批次物料必须逐行指定批次）
+const issueBatchOptions = ref({})
+const blankIssue = () => ({ material_id: null, qty: 1, needBatch: false, batch_id: null })
 
 function openIssue() {
   issueRows.value = [blankIssue()]
+  issueBatchOptions.value = {}
   issueVisible.value = true
 }
 
 function addIssue() {
   issueRows.value.push(blankIssue())
+}
+
+async function onIssueMaterialChange(row) {
+  const m = materials.value.find((x) => x.id === row.material_id)
+  row.needBatch = !!m?.batch_required
+  row.batch_id = null
+  if (!row.needBatch) return
+  try {
+    const d = await request.get('/batches', {
+      params: { material_id: row.material_id, insp_status: 'qualified', page: 1, page_size: 100 },
+      silent: true,
+    })
+    issueBatchOptions.value[row.material_id] = d.items
+  } catch {
+    issueBatchOptions.value[row.material_id] = []
+  }
 }
 
 async function submitIssue() {
@@ -123,8 +153,18 @@ async function submitIssue() {
     ElMessage.warning('请至少填写一行领料明细')
     return
   }
+  // 批次物料必须指定合格批次（后端放行拦截：仅 qualified 可领）
+  const missing = body.find((r) => r.needBatch && !r.batch_id)
+  if (missing) {
+    ElMessage.warning(`物料「${mlabel(missing.material_id)}」已启用批次管理，领料必须选择合格批次`)
+    return
+  }
   await request.post(`/manufacturing-orders/${detail.value.id}/issue`, {
-    lines: body.map((r) => ({ material_id: r.material_id, qty: r.qty })),
+    lines: body.map((r) => ({
+      material_id: r.material_id,
+      qty: r.qty,
+      batch_id: r.needBatch ? r.batch_id : null,
+    })),
   })
   ElMessage.success('领料成功')
   issueVisible.value = false
@@ -180,7 +220,7 @@ onMounted(async () => {
       <el-input v-model="query.keyword" placeholder="工单号搜索" clearable style="width: 200px" @keyup.enter="onSearch" />
       <el-button type="primary" @click="onSearch">搜索</el-button>
       <span class="spacer" />
-      <el-button type="primary" @click="openCreate">新建生产工单</el-button>
+      <el-button v-if="canCreate" type="primary" @click="openCreate">新建生产工单</el-button>
     </div>
     <el-table :data="list" border size="small" v-loading="loading">
       <el-table-column prop="doc_no" label="工单号" min-width="130" />
@@ -254,10 +294,10 @@ onMounted(async () => {
             <el-descriptions-item label="人工/制费">{{ fmtMoney(detail.extra_cost ?? 0) }}</el-descriptions-item>
           </el-descriptions>
           <div class="actions">
-            <el-button v-if="canRelease(detail.status)" type="primary" size="small" @click="doAction('approve')">下达</el-button>
-            <el-button v-if="canIssue(detail.status)" type="success" size="small" @click="openIssue">领料</el-button>
-            <el-button v-if="canReceive(detail.status)" type="success" size="small" @click="openReceive">完工入库</el-button>
-            <el-button v-if="canClose(detail.status)" type="warning" size="small" @click="doAction('close')">关闭</el-button>
+            <el-button v-if="canRelease(detail.status) && actionAuth.approve.value" type="primary" size="small" @click="doAction('approve')">下达</el-button>
+            <el-button v-if="canIssue(detail.status) && actionAuth.issue.value" type="success" size="small" @click="openIssue">领料</el-button>
+            <el-button v-if="canReceive(detail.status) && actionAuth.receive.value" type="success" size="small" @click="openReceive">完工入库</el-button>
+            <el-button v-if="canClose(detail.status) && actionAuth.close.value" type="warning" size="small" @click="doAction('close')">关闭</el-button>
           </div>
 
           <div class="section-title">领料记录</div>
@@ -281,14 +321,33 @@ onMounted(async () => {
       <el-table :data="issueRows" border size="small">
         <el-table-column label="物料" min-width="220">
           <template #default="{ row }">
-            <el-select v-model="row.material_id" filterable size="small">
+            <el-select v-model="row.material_id" filterable size="small" @change="onIssueMaterialChange(row)">
               <el-option v-for="m in materials" :key="m.id" :label="`${m.code} ${m.name}`" :value="m.id" />
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column label="数量" width="150">
+        <el-table-column label="数量" width="130">
           <template #default="{ row }">
             <el-input-number v-model="row.qty" :min="0.0001" :precision="4" :controls="false" size="small" style="width: 100%" />
+          </template>
+        </el-table-column>
+        <el-table-column label="领料批次" width="190">
+          <template #default="{ row }">
+            <el-select
+              v-if="row.needBatch"
+              v-model="row.batch_id"
+              filterable
+              size="small"
+              placeholder="选合格批次"
+            >
+              <el-option
+                v-for="b in issueBatchOptions[row.material_id] || []"
+                :key="b.id"
+                :label="b.batch_no"
+                :value="b.id"
+              />
+            </el-select>
+            <span v-else style="color:#999">—</span>
           </template>
         </el-table-column>
       </el-table>
