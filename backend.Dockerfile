@@ -13,5 +13,5 @@ RUN uv sync --frozen --no-dev
 
 EXPOSE 8000
 
-# 启动：先跑迁移，再起服务
-CMD ["sh", "-c", "alembic upgrade head && uv run --no-sync uvicorn erp_lite.main:app --host 0.0.0.0 --port 8000"]
+# 启动：先跑迁移，再起服务（venv 内命令统一走 uv run --no-sync）
+CMD ["sh", "-c", "uv run --no-sync alembic upgrade head && uv run --no-sync uvicorn erp_lite.main:app --host 0.0.0.0 --port 8000"]
