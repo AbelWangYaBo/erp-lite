@@ -50,7 +50,7 @@ def _paginate(db: Session, stmt, page: int, page_size: int, model) -> dict:
     for r in rows:
         d = {
             c: (getattr(r, c).isoformat() if hasattr(getattr(r, c), "isoformat") else getattr(r, c))
-            for c in ("id", "doc_type", "doc_id", "action", "actor", "field", "old_value", "new_value", "created_at")
+            for c in ("id", "doc_type", "doc_id", "action", "actor", "field", "old_value", "new_value", "detail", "created_at")
             if hasattr(r, c)
         }
         items.append(d)

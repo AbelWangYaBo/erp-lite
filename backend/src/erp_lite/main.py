@@ -9,6 +9,9 @@ from fastapi import FastAPI
 
 from erp_lite.routers import audit as audit_router
 from erp_lite.routers import auth as auth_router
+from erp_lite.routers import materials as materials_router
+from erp_lite.routers import partners as partners_router
+from erp_lite.routers import warehouses as warehouses_router
 
 
 @asynccontextmanager
@@ -22,6 +25,9 @@ app = FastAPI(title="erp-lite", version="0.1.0", lifespan=lifespan)
 # /api/v1/auth/login 自带鉴权豁免；audit 等业务 router 在各自定义中要求 get_current_user
 app.include_router(auth_router.router)
 app.include_router(audit_router.router)
+app.include_router(materials_router.router)
+app.include_router(warehouses_router.router)
+app.include_router(partners_router.router)
 
 
 @app.get("/api/health")
