@@ -52,7 +52,7 @@ async function save() {
     return
   }
   await ElMessageBox.confirm('确认保存该 BOM？', '操作确认', { type: 'warning' })
-  await request.post(`/boms/${parentId.value}`, {
+  await request.put(`/boms/${parentId.value}`, {
     lines: valid.map((l) => ({ material_id: l.material_id, qty_per: l.qty_per, loss_pct: l.loss_pct || 0 })),
   })
   ElMessage.success('BOM 已保存')

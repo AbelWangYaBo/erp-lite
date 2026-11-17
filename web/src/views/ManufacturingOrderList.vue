@@ -92,12 +92,12 @@ const canIssue = (s) => ['approved', 'partial'].includes(s)
 const canReceive = (s) => ['approved', 'partial'].includes(s)
 const canClose = (s) => ['approved', 'partial', 'completed'].includes(s)
 
-const ACTION_TEXT = { release: '下达', close: '关闭' }
+const ACTION_TEXT = { approve: '下达', close: '关闭' }
 
 async function doAction(action) {
   const text = ACTION_TEXT[action]
   await ElMessageBox.confirm(`确认${text}该生产工单？`, '操作确认', { type: 'warning' })
-  await request.post(`/manufacturing-orders/${detail.value.id}/${action}`)
+  await request.post(`/manufacturing-orders/${detail.value.id}/approve`)
   ElMessage.success(`${text}成功`)
   detail.value = await request.get(`/manufacturing-orders/${detail.value.id}`)
   load()
@@ -134,11 +134,10 @@ async function submitIssue() {
 
 // ---------- 完工入库 ----------
 const receiveVisible = ref(false)
-const receiveForm = reactive({ qty: 1, warehouse_id: null })
+const receiveForm = reactive({ qty: 1 })
 
 function openReceive() {
   receiveForm.qty = Number(detail.value.planned_qty) - Number(receivedQty.value ?? 0) || 0
-  receiveForm.warehouse_id = detail.value.warehouse_id
   receiveVisible.value = true
 }
 
@@ -149,7 +148,6 @@ async function submitReceive() {
   }
   await request.post(`/manufacturing-orders/${detail.value.id}/receive`, {
     qty: receiveForm.qty,
-    warehouse_id: receiveForm.warehouse_id,
   })
   ElMessage.success('完工入库成功')
   receiveVisible.value = false
@@ -256,7 +254,7 @@ onMounted(async () => {
             <el-descriptions-item label="人工/制费">{{ fmtMoney(detail.extra_cost ?? 0) }}</el-descriptions-item>
           </el-descriptions>
           <div class="actions">
-            <el-button v-if="canRelease(detail.status)" type="primary" size="small" @click="doAction('release')">下达</el-button>
+            <el-button v-if="canRelease(detail.status)" type="primary" size="small" @click="doAction('approve')">下达</el-button>
             <el-button v-if="canIssue(detail.status)" type="success" size="small" @click="openIssue">领料</el-button>
             <el-button v-if="canReceive(detail.status)" type="success" size="small" @click="openReceive">完工入库</el-button>
             <el-button v-if="canClose(detail.status)" type="warning" size="small" @click="doAction('close')">关闭</el-button>
@@ -308,11 +306,6 @@ onMounted(async () => {
       <el-form label-width="90px">
         <el-form-item label="入库数量">
           <el-input-number v-model="receiveForm.qty" :min="0.0001" :precision="4" :controls="false" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="入库仓库">
-          <el-select v-model="receiveForm.warehouse_id" style="width: 100%">
-            <el-option v-for="w in warehouses" :key="w.id" :label="w.name" :value="w.id" />
-          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
