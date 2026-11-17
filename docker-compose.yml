@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: erp
+      POSTGRES_PASSWORD: erp123
+      POSTGRES_DB: erp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp -d erp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://erp:erp123@db:5432/erp
+      JWT_SECRET: change-me-in-prod
+      ERP_ADMIN_USER: admin
+      ERP_ADMIN_PASSWORD: admin123
+    depends_on:
+      db:
+        condition: service_healthy
+    # 不对外暴露端口，由 web 的 nginx 反代 /api
+    expose:
+      - "8000"
+
+  web:
+    build:
+      context: .
+      dockerfile: web.Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

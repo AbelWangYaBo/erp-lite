@@ -1,0 +1,10 @@
+# 构建上下文为仓库根目录时排除无关内容
+.git
+node_modules
+**/node_modules
+**/dist
+backend/.venv
+pgdata
+docs
+*.md
+.env
