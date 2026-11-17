@@ -10,7 +10,7 @@ from erp_lite.models.base import (
     SettleStatus,
     TimestampMixin,
 )
-from erp_lite.models.users import User
+from erp_lite.models.users import Role, User
 from erp_lite.models.master_data import Material, Partner, Warehouse
 from erp_lite.models.purchase import PurchaseOrder, PurchaseOrderLine
 from erp_lite.models.sales import SalesOrder, SalesOrderLine
@@ -36,6 +36,7 @@ __all__ = [
     "MoveType",
     "SettleStatus",
     "User",
+    "Role",
     "Warehouse",
     "Material",
     "Partner",

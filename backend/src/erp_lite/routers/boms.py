@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import Bom, BomLine, Material, User
 from erp_lite.schemas.production import BomOut, BomPut
 from erp_lite.services.audit import write_audit, write_op_log
@@ -84,7 +84,7 @@ def get_bom(
     return bom
 
 
-@router.put("/{material_id}", response_model=BomOut)
+@router.put("/{material_id}", response_model=BomOut, dependencies=[Depends(require_action("bom.write"))])
 def put_bom(
     material_id: int,
     payload: BomPut,

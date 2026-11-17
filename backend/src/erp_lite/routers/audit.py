@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import AuditRecord, OperationLog, User
 
 router = APIRouter(prefix="/api/v1/audit", tags=["audit"], dependencies=[Depends(get_current_user)])
@@ -57,7 +57,7 @@ def _paginate(db: Session, stmt, page: int, page_size: int, model) -> dict:
     return {"items": items, "total": total}
 
 
-@router.get("/records")
+@router.get("/records", dependencies=[Depends(require_action("audit.read"))])
 def list_audit_records(
     doc_type: str | None = None,
     doc_id: int | None = None,
@@ -74,7 +74,7 @@ def list_audit_records(
     return _paginate(db, stmt, page, page_size, AuditRecord)
 
 
-@router.get("/logs")
+@router.get("/logs", dependencies=[Depends(require_action("audit.read"))])
 def list_operation_logs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

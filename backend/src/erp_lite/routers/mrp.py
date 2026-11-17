@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     ManufacturingOrder,
     Material,
@@ -58,7 +58,7 @@ def _default_warehouse_or_400(material: Material) -> int:
     return material.default_warehouse_id
 
 
-@router.post("/run")
+@router.post("/run", dependencies=[Depends(require_action("mrp.run"))])
 def run_mrp_api(
     payload: MrpRunIn,
     db: Session = Depends(get_db),
@@ -131,7 +131,7 @@ def list_suggestions(
     }
 
 
-@router.post("/suggestions/convert")
+@router.post("/suggestions/convert", dependencies=[Depends(require_action("mrp.convert"))])
 def convert_suggestions(
     payload: MrpConvertIn,
     db: Session = Depends(get_db),

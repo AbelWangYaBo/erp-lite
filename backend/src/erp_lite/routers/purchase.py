@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     AuditRecord,
     DocStatus,
@@ -108,7 +108,7 @@ def get_purchase_order(
     return detail
 
 
-@router.post("", response_model=PurchaseOrderOut)
+@router.post("", response_model=PurchaseOrderOut, dependencies=[Depends(require_action("po.create"))])
 def create_purchase_order(
     payload: PurchaseOrderCreate,
     db: Session = Depends(get_db),
@@ -132,7 +132,7 @@ def create_purchase_order(
     return po
 
 
-@router.put("/{po_id}", response_model=PurchaseOrderOut)
+@router.put("/{po_id}", response_model=PurchaseOrderOut, dependencies=[Depends(require_action("po.update"))])
 def update_purchase_order(
     po_id: int,
     payload: PurchaseOrderUpdate,
@@ -169,7 +169,7 @@ def update_purchase_order(
     return po
 
 
-@router.post("/{po_id}/approve", response_model=PurchaseOrderOut)
+@router.post("/{po_id}/approve", response_model=PurchaseOrderOut, dependencies=[Depends(require_action("po.approve"))])
 def approve_purchase_order(
     po_id: int,
     db: Session = Depends(get_db),
@@ -189,7 +189,7 @@ def approve_purchase_order(
     return po
 
 
-@router.post("/{po_id}/receive", response_model=PurchaseOrderOut)
+@router.post("/{po_id}/receive", response_model=PurchaseOrderOut, dependencies=[Depends(require_action("po.receive"))])
 def receive_purchase_order(
     po_id: int,
     body: list[ReceiveLineIn],
@@ -265,7 +265,7 @@ def receive_purchase_order(
     return po
 
 
-@router.post("/{po_id}/void", response_model=PurchaseOrderOut)
+@router.post("/{po_id}/void", response_model=PurchaseOrderOut, dependencies=[Depends(require_action("po.void"))])
 def void_purchase_order(
     po_id: int,
     db: Session = Depends(get_db),
@@ -289,7 +289,7 @@ def void_purchase_order(
     return po
 
 
-@router.post("/{po_id}/close", response_model=PurchaseOrderOut)
+@router.post("/{po_id}/close", response_model=PurchaseOrderOut, dependencies=[Depends(require_action("po.close"))])
 def close_purchase_order(
     po_id: int,
     db: Session = Depends(get_db),

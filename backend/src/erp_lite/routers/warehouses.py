@@ -5,7 +5,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import User, Warehouse
 from erp_lite.routers.common import apply_update_with_diff_audit, paginate
 from erp_lite.schemas import (
@@ -63,7 +63,7 @@ def get_warehouse(
     return _get_or_404(db, warehouse_id)
 
 
-@router.post("", response_model=WarehouseOut)
+@router.post("", response_model=WarehouseOut, dependencies=[Depends(require_action("master.write"))])
 def create_warehouse(
     payload: WarehouseCreate,
     db: Session = Depends(get_db),
@@ -80,7 +80,7 @@ def create_warehouse(
     return obj
 
 
-@router.put("/{warehouse_id}", response_model=WarehouseOut)
+@router.put("/{warehouse_id}", response_model=WarehouseOut, dependencies=[Depends(require_action("master.write"))])
 def update_warehouse(
     warehouse_id: int,
     payload: WarehouseUpdate,

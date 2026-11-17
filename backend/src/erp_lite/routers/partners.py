@@ -5,7 +5,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     Payable,
     Partner,
@@ -91,7 +91,7 @@ def get_partner(
     return _get_or_404(db, partner_id)
 
 
-@router.post("", response_model=PartnerOut)
+@router.post("", response_model=PartnerOut, dependencies=[Depends(require_action("master.write"))])
 def create_partner(
     payload: PartnerCreate,
     db: Session = Depends(get_db),
@@ -108,7 +108,7 @@ def create_partner(
     return obj
 
 
-@router.put("/{partner_id}", response_model=PartnerOut)
+@router.put("/{partner_id}", response_model=PartnerOut, dependencies=[Depends(require_action("master.write"))])
 def update_partner(
     partner_id: int,
     payload: PartnerUpdate,
@@ -125,7 +125,7 @@ def update_partner(
     return obj
 
 
-@router.delete("/{partner_id}")
+@router.delete("/{partner_id}", dependencies=[Depends(require_action("master.write"))])
 def delete_partner(
     partner_id: int,
     db: Session = Depends(get_db),

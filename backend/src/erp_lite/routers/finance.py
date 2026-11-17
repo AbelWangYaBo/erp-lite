@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     Payable,
     Partner,
@@ -109,7 +109,7 @@ def list_receivables(
     return _list_targets(db, Receivable, partner_id, settle_status, page, page_size)
 
 
-@router.post("/settlements", response_model=SettlementOut, status_code=status.HTTP_200_OK)
+@router.post("/settlements", response_model=SettlementOut, status_code=status.HTTP_200_OK, dependencies=[Depends(require_action("settlement.create"))])
 def create_settlement(
     body: SettlementCreate,
     db: Session = Depends(get_db),

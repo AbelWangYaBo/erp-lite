@@ -1,4 +1,4 @@
-"""认证依赖：JWT 解析 + 当前用户。"""
+"""认证依赖：JWT 解析（含 role claim）+ 当前用户 + require_action 权限工厂。"""
 
 from datetime import datetime, timedelta, timezone
 
@@ -11,13 +11,16 @@ from sqlalchemy.orm import Session
 from erp_lite.config import settings
 from erp_lite.database import get_db
 from erp_lite.models import User
+from erp_lite.services.rbac import actions_for
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
-def create_access_token(username: str) -> str:
+def create_access_token(username: str, role: str | None = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
-    payload = {"sub": username, "exp": expire}
+    payload: dict = {"sub": username, "exp": expire}
+    if role is not None:
+        payload["role"] = role
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
@@ -32,7 +35,9 @@ def get_current_user(
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
         username: str | None = payload.get("sub")
-        if not username:
+        # v1 旧 token 无 role claim：拒绝（不静默回退 admin），要求重新登录
+        role_claim: str | None = payload.get("role")
+        if not username or not role_claim:
             raise credentials_exc
     except JWTError:
         raise credentials_exc
@@ -40,3 +45,17 @@ def get_current_user(
     if user is None:
         raise credentials_exc
     return user
+
+
+def require_action(action: str):
+    """依赖工厂：当前用户的 role 须持有 action，否则 403（中文提示）。"""
+
+    def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if action not in actions_for(current_user.role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"当前角色无权执行该操作：{action}",
+            )
+        return current_user
+
+    return dependency

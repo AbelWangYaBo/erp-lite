@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     AuditRecord,
     DocStatus,
@@ -101,7 +101,7 @@ def get_sales_order(
     return detail
 
 
-@router.post("", response_model=SalesOrderOut)
+@router.post("", response_model=SalesOrderOut, dependencies=[Depends(require_action("so.create"))])
 def create_sales_order(
     payload: SalesOrderCreate,
     db: Session = Depends(get_db),
@@ -125,7 +125,7 @@ def create_sales_order(
     return so
 
 
-@router.put("/{so_id}", response_model=SalesOrderOut)
+@router.put("/{so_id}", response_model=SalesOrderOut, dependencies=[Depends(require_action("so.update"))])
 def update_sales_order(
     so_id: int,
     payload: SalesOrderUpdate,
@@ -159,7 +159,7 @@ def update_sales_order(
     return so
 
 
-@router.post("/{so_id}/approve", response_model=SalesOrderOut)
+@router.post("/{so_id}/approve", response_model=SalesOrderOut, dependencies=[Depends(require_action("so.approve"))])
 def approve_sales_order(
     so_id: int,
     db: Session = Depends(get_db),
@@ -179,7 +179,7 @@ def approve_sales_order(
     return so
 
 
-@router.post("/{so_id}/ship", response_model=SalesOrderOut)
+@router.post("/{so_id}/ship", response_model=SalesOrderOut, dependencies=[Depends(require_action("so.ship"))])
 def ship_sales_order(
     so_id: int,
     body: list[ReceiveLineIn],
@@ -276,7 +276,7 @@ def ship_sales_order(
     return so
 
 
-@router.post("/{so_id}/void", response_model=SalesOrderOut)
+@router.post("/{so_id}/void", response_model=SalesOrderOut, dependencies=[Depends(require_action("so.void"))])
 def void_sales_order(
     so_id: int,
     db: Session = Depends(get_db),
@@ -300,7 +300,7 @@ def void_sales_order(
     return so
 
 
-@router.post("/{so_id}/close", response_model=SalesOrderOut)
+@router.post("/{so_id}/close", response_model=SalesOrderOut, dependencies=[Depends(require_action("so.close"))])
 def close_sales_order(
     so_id: int,
     db: Session = Depends(get_db),

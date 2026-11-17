@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     DocStatus,
     ManufacturingOrder,
@@ -90,7 +90,7 @@ def get_mo(
     return _get_or_404(db, mo_id)
 
 
-@router.post("", response_model=MoOut)
+@router.post("", response_model=MoOut, dependencies=[Depends(require_action("mo.create"))])
 def create_mo(
     payload: MoCreate,
     db: Session = Depends(get_db),
@@ -124,7 +124,7 @@ def create_mo(
     return mo
 
 
-@router.post("/{mo_id}/approve", response_model=MoOut)
+@router.post("/{mo_id}/approve", response_model=MoOut, dependencies=[Depends(require_action("mo.release"))])
 def approve_mo(
     mo_id: int,
     db: Session = Depends(get_db),
@@ -139,7 +139,7 @@ def approve_mo(
     return mo
 
 
-@router.post("/{mo_id}/issue", response_model=MoDetail)
+@router.post("/{mo_id}/issue", response_model=MoDetail, dependencies=[Depends(require_action("mo.issue"))])
 def issue_mo(
     mo_id: int,
     body: MoIssueIn,
@@ -215,7 +215,7 @@ def issue_mo(
     return mo
 
 
-@router.post("/{mo_id}/receive", response_model=MoOut)
+@router.post("/{mo_id}/receive", response_model=MoOut, dependencies=[Depends(require_action("mo.receive"))])
 def receive_mo(
     mo_id: int,
     body: MoReceiveIn,
@@ -268,7 +268,7 @@ def receive_mo(
     return mo
 
 
-@router.post("/{mo_id}/close", response_model=MoOut)
+@router.post("/{mo_id}/close", response_model=MoOut, dependencies=[Depends(require_action("mo.close"))])
 def close_mo(
     mo_id: int,
     db: Session = Depends(get_db),

@@ -5,7 +5,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user
+from erp_lite.deps import get_current_user, require_action
 from erp_lite.models import (
     Bom,
     BomLine,
@@ -96,7 +96,7 @@ def get_material(
     return _get_or_404(db, material_id)
 
 
-@router.post("", response_model=MaterialOut)
+@router.post("", response_model=MaterialOut, dependencies=[Depends(require_action("master.write"))])
 def create_material(
     payload: MaterialCreate,
     db: Session = Depends(get_db),
@@ -113,7 +113,7 @@ def create_material(
     return obj
 
 
-@router.put("/{material_id}", response_model=MaterialOut)
+@router.put("/{material_id}", response_model=MaterialOut, dependencies=[Depends(require_action("master.write"))])
 def update_material(
     material_id: int,
     payload: MaterialUpdate,
@@ -130,7 +130,7 @@ def update_material(
     return obj
 
 
-@router.delete("/{material_id}")
+@router.delete("/{material_id}", dependencies=[Depends(require_action("master.write"))])
 def delete_material(
     material_id: int,
     db: Session = Depends(get_db),

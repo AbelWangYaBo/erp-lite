@@ -17,6 +17,7 @@ from erp_lite.routers import mrp as mrp_router
 from erp_lite.routers import partners as partners_router
 from erp_lite.routers import purchase as purchase_router
 from erp_lite.routers import sales as sales_router
+from erp_lite.routers import users as users_router
 from erp_lite.routers import finance as finance_router
 from erp_lite.routers import warehouses as warehouses_router
 
@@ -42,6 +43,7 @@ app.include_router(boms_router.router)
 app.include_router(mrp_router.router)
 app.include_router(manufacturing_router.router)
 app.include_router(finance_router.router)
+app.include_router(users_router.router)
 
 
 @app.get("/api/health")

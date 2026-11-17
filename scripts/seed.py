@@ -9,7 +9,8 @@
   docker compose exec api uv run python scripts/seed.py
 
 种子内容：2 仓库、2 物料（RAW 螺丝 M3×8 / FG 成品支架）、1 客户、1 供应商、
-FG 的 BOM（2×RAW）、种子管理员（users 表为空时，取 ERP_ADMIN_USER/ERP_ADMIN_PASSWORD）。
+FG 的 BOM（2×RAW）、5 个演示账号（admin/admin123、purchase/p123、warehouse/w123、
+production/p123456、qa/q123，账号名即角色名，密码错开避免同密风险）。
 """
 
 import os
@@ -82,17 +83,26 @@ def main() -> None:
             db.add(BomLine(bom_id=bom.id, material_id=raw.id, qty_per=2, loss_pct=0))
             created.append("boms:FG-BRACKET(2×RAW-SCREW-M3X8)")
 
-        # 种子管理员：仅 users 表为空时创建（与登录路由的自动播种一致）
-        if db.scalar(select(User.id).limit(1)) is None:
+        # v2 演示五账号：账号名即角色名，逐个按 username 判存在（幂等）。
+        # 密码错开避免同密风险；改角色后需重新登录以刷新 JWT 里的 role claim。
+        demo_accounts = [
+            ("admin", "admin123"),
+            ("purchase", "p123"),
+            ("warehouse", "w123"),
+            ("production", "p123456"),
+            ("qa", "q123"),
+        ]
+        for username, password in demo_accounts:
+            if db.scalar(select(User).where(User.username == username)) is not None:
+                continue
             db.add(
                 User(
-                    username=os.environ.get("ERP_ADMIN_USER", "admin"),
-                    password_hash=hash_password(
-                        os.environ.get("ERP_ADMIN_PASSWORD", "admin123")
-                    ),
+                    username=username,
+                    password_hash=hash_password(password),
+                    role=username,
                 )
             )
-            created.append("users:admin")
+            created.append(f"users:{username}")
 
         db.commit()
 

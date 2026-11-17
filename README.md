@@ -41,18 +41,29 @@ docker compose ps        # 三服务 Up/healthy
 - 端口说明：本机 8080 常被其他服务占用，web 映射为 **18080:80**，可在 `docker-compose.yml` 里改回。
 - 数据库 `db` 容器**不暴露宿主端口**（避免与本机既有 PostgreSQL 冲突），仅容器网络内可访问。
 - 默认管理员账号 `admin / admin123`。**部署到公网前务必改密码**：在 `.env` 或环境变量中设置
-  `ERP_ADMIN_PASSWORD`（以及 `JWT_SECRET`，默认值仅限本地调试）：
+  `JWT_SECRET`，并为 `admin` 改强密码（用户管理接口仅 admin 可用）：
 
   ```bash
-  echo 'JWT_SECRET=请换成长随机串
-  ERP_ADMIN_PASSWORD=你的强密码' > .env
+  echo 'JWT_SECRET=请换成长随机串' > .env
   docker compose up -d
   ```
+
+- **v2 演示五账号**（seed 脚本创建，账号名即角色名，密码错开避免同密风险）：
+
+  | 账号 | 密码 | 角色 |
+  |---|---|---|
+  | admin | admin123 | admin（全量） |
+  | purchase | p123 | purchase（PO/SO 建审、资质录入） |
+  | warehouse | w123 | warehouse（PO 入库、SO 出库） |
+  | production | p123456 | production（BOM/MRP/MO） |
+  | qa | q123 | qa（检验判定、资质审核） |
+
+  注意：JWT 签发时带 role claim，**修改用户角色后该账号需重新登录**才生效。
 
 ## 种子脚本（幂等）
 
 2 仓库（MAIN 原料仓 / FG 成品仓）、2 物料（RAW-SCREW-M3X8 螺丝 M3×8、FG-BRACKET 成品支架）、
-1 客户（CUS-001）、1 供应商（SUP-001）、FG 的 BOM（2×RAW）、种子管理员。
+1 客户（CUS-001）、1 供应商（SUP-001）、FG 的 BOM（2×RAW）、演示五账号（见上表）。
 按 code 判存在，重复执行不报错、不重复插入。
 
 ```bash
@@ -90,6 +101,6 @@ cat backup_20260101.sql | docker compose exec -T db psql -U erp -d erp
 ## 测试
 
 ```bash
-cd backend && env -u PYTHONPATH uv run pytest -q   # 125 个用例
+cd backend && env -u PYTHONPATH uv run pytest -q   # v1 140 用例 + v2 RBAC 37 用例
 cd web && npm run build
 ```

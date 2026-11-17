@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 
 from erp_lite.config import settings
 from erp_lite.database import get_db
-from erp_lite.deps import create_access_token
+from erp_lite.deps import create_access_token, get_current_user
 from erp_lite.models import User
 from erp_lite.services.audit import write_op_log
+from erp_lite.services.rbac import actions_for
 from erp_lite.services.security import hash_password, verify_password
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -47,4 +48,14 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse
         )
     write_op_log(db, payload.username, "login", "登录成功")
     db.commit()
-    return TokenResponse(token=create_access_token(user.username))
+    return TokenResponse(token=create_access_token(user.username, user.role.value))
+
+
+@router.get("/me")
+def me(current_user: User = Depends(get_current_user)) -> dict:
+    """当前身份与权限集（前端菜单/按钮按此显隐）。"""
+    return {
+        "username": current_user.username,
+        "role": current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
+        "actions": sorted(actions_for(current_user.role)),
+    }

@@ -35,7 +35,7 @@ def db_session():
 @pytest.fixture()
 def client(db_session):
     """已登录替身的客户端：get_db 指向测试库，get_current_user 返回假用户。"""
-    fake_user = SimpleNamespace(id=1, username="tester")
+    fake_user = SimpleNamespace(id=1, username="tester", role="admin")
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_user] = lambda: fake_user
     try:
