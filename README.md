@@ -12,17 +12,22 @@
 
 ## 本地开发
 
+> 本地开发不使用 docker（docker 仅用于服务端部署）。本机 8000 端口被其他服务占用，示例用 8100。
+
 ```bash
-# 后端（默认 SQLite；正式跑配 DATABASE_URL 指向 PostgreSQL）
+# 后端（默认 SQLite；首次需先建表）
 cd backend
 uv sync
+export DATABASE_URL=sqlite:///./erp-dev.db
 uv run alembic upgrade head
-uv run uvicorn erp_lite.main:app --reload --port 8000
+uv run python ../scripts/seed.py
+uv run uvicorn erp_lite.main:app --reload --port 8100
 
-# 前端（dev 代理 /api -> http://localhost:8000）
+# 前端（dev 代理 /api -> VITE_API_TARGET，默认 http://localhost:8000）
 cd web
 npm install
-npm run dev
+VITE_API_TARGET=http://localhost:8100 npm run dev
+# 访问 http://localhost:5173
 ```
 
 ## Docker 一键启动

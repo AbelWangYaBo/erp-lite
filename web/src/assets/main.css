@@ -1,0 +1,24 @@
+/* 全局重置：body 默认 margin 会导致 100vh 布局超出视口（四周空白 + 整页滚动条抖动） */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    'Helvetica Neue',
+    Helvetica,
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

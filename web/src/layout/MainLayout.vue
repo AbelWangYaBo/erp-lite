@@ -80,7 +80,7 @@ function onLogout() {
 
 <style scoped>
 .layout {
-  height: 100vh;
+  height: 100%;
 }
 .aside {
   border-right: 1px solid #e6e6e6;
