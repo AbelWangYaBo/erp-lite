@@ -9,8 +9,11 @@ from fastapi import FastAPI
 
 from erp_lite.routers import audit as audit_router
 from erp_lite.routers import auth as auth_router
+from erp_lite.routers import inventory as inventory_router
 from erp_lite.routers import materials as materials_router
 from erp_lite.routers import partners as partners_router
+from erp_lite.routers import purchase as purchase_router
+from erp_lite.routers import sales as sales_router
 from erp_lite.routers import warehouses as warehouses_router
 
 
@@ -28,6 +31,9 @@ app.include_router(audit_router.router)
 app.include_router(materials_router.router)
 app.include_router(warehouses_router.router)
 app.include_router(partners_router.router)
+app.include_router(purchase_router.router)
+app.include_router(sales_router.router)
+app.include_router(inventory_router.router)
 
 
 @app.get("/api/health")

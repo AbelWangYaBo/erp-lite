@@ -6,7 +6,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from erp_lite.models import User
-from erp_lite.services.audit import write_audit
+from erp_lite.models.base import DocStatus
+from erp_lite.services.audit import write_audit, write_op_log
 
 
 def paginate(db: Session, stmt, page: int, page_size: int) -> tuple[list, int]:
@@ -49,4 +50,28 @@ def apply_update_with_diff_audit(
             setattr(obj, field, new)
             changed += 1
     return changed
+
+
+def change_status(
+    db: Session,
+    doc,
+    doc_type: str,
+    new_status: DocStatus,
+    actor: str,
+    note: str,
+) -> None:
+    """单据状态机变更：写 action=status 的留痕（old/new 为状态名）+ 操作日志。"""
+    old = doc.status
+    doc.status = new_status
+    write_audit(
+        db,
+        doc_type=doc_type,
+        doc_id=doc.id,
+        action="status",
+        actor=actor,
+        field="status",
+        old=str(old.value),
+        new=str(new_status.value),
+    )
+    write_op_log(db, actor, f"{doc_type}_{new_status.value}", note)
 
