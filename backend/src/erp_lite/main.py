@@ -1,8 +1,27 @@
-"""erp-lite 后端入口：最小 FastAPI app（S0），模型与路由由后续阶段补充。"""
+"""erp-lite 后端入口：FastAPI app、路由挂接、健康检查。
+
+lifespan 只保留常驻职责；建表由 alembic 迁移负责，一次性任务不放这里。
+"""
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-app = FastAPI(title="erp-lite", version="0.1.0")
+from erp_lite.routers import audit as audit_router
+from erp_lite.routers import auth as auth_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 建表交给 alembic upgrade head（api 容器启动脚本执行）；此处无一次性任务
+    yield
+
+
+app = FastAPI(title="erp-lite", version="0.1.0", lifespan=lifespan)
+
+# /api/v1/auth/login 自带鉴权豁免；audit 等业务 router 在各自定义中要求 get_current_user
+app.include_router(auth_router.router)
+app.include_router(audit_router.router)
 
 
 @app.get("/api/health")
