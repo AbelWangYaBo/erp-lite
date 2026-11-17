@@ -52,6 +52,18 @@ def _get_or_404(db: Session, so_id: int) -> SalesOrder:
     return obj
 
 
+def _get_or_404_for_update(db: Session, so_id: int) -> SalesOrder:
+    """出库用：FOR UPDATE 锁 SO 行后再读。
+
+    PostgreSQL 下该行锁串行化同一 SO 的并发出库，防止并发事务同时通过
+    「剩余可发/库存充足」校验导致超发；SQLite 忽略 FOR UPDATE（测试单连接串行）。
+    """
+    obj = db.scalar(select(SalesOrder).where(SalesOrder.id == so_id).with_for_update())
+    if obj is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="销售订单不存在")
+    return obj
+
+
 @router.get("")
 def list_sales_orders(
     keyword: str | None = None,
@@ -174,7 +186,7 @@ def ship_sales_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> SalesOrder:
-    so = _get_or_404(db, so_id)
+    so = _get_or_404_for_update(db, so_id)
     if so.status not in (DocStatus.approved, DocStatus.partial):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="仅已审核/部分出库状态可出库"

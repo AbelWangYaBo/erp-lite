@@ -87,24 +87,34 @@ def post_move(
     source_type: str,
     source_id: int,
     source_line_id: int | None = None,
+    amount: Decimal | int | float | str | None = None,
 ) -> InventoryMove:
-    """写一条库存流水并维护移动加权均价。
+    """写一条库存流水并维护移动加权平均计价。
 
     - qty 带符号：入库正 / 出库负。
     - 入库：单价取传入 unit_cost，金额 = qty * unit_cost；
       新均价 = (现存金额 + 入库金额) / (现存数量 + 入库数量)（由台账汇总派生）。
     - 出库：单价取当前移动加权均价（现存量为 0 或库存不足时拒绝，报中文错误），
       金额 = qty * 均价（负数），unit_cost 记录出库成本。
+    - adjust 允许 qty=0 的纯金额调整（须显式传 amount）：只调库存金额不改数量，
+      用于 MO 关闭时剩余成本调增；unit_cost 仅作单价留痕。
+    - 并发：开头对物料行 SELECT ... FOR UPDATE。PostgreSQL 下该行锁把同一物料的
+      出入库 check-then-act 串行化，防止并发事务基于同一现存快照错算均价/超卖；
+      SQLite 忽略 FOR UPDATE（测试内存库单连接串行，无并发）。
     """
     db.flush()  # 同事务内先前写入的流水先落库，确保汇总包含它们
     qty_d = q4(qty)
-    if qty_d == 0:
-        raise ValueError("数量不能为 0")
     if not isinstance(move_type, MoveType):
         move_type = MoveType(move_type)
-
-    stock_qty, stock_amt = get_stock(db, material_id, warehouse_id)
-    if qty_d < 0:
+    # 物料行锁（PG 下生效，见 docstring）
+    db.execute(select(Material).where(Material.id == material_id).with_for_update())
+    if qty_d == 0:
+        if move_type is not MoveType.adjust or amount is None:
+            raise ValueError("数量不能为 0")
+        unit_cost_d = q4(unit_cost)
+        amount_d = q4(amount)
+    elif qty_d < 0:
+        stock_qty, stock_amt = get_stock(db, material_id, warehouse_id)
         if stock_qty <= 0:
             raise ValueError(f"现存量为 0，禁止出库（物料 {material_id} / 仓库 {warehouse_id}）")
         if stock_qty + qty_d < 0:
@@ -113,10 +123,10 @@ def post_move(
                 f"（物料 {material_id} / 仓库 {warehouse_id}）"
             )
         unit_cost_d = q4(stock_amt / stock_qty)  # 出库成本 = 当前移动加权均价
-        amount = q4(qty_d * unit_cost_d)  # 负数
+        amount_d = q4(qty_d * unit_cost_d)  # 负数
     else:
         unit_cost_d = q4(unit_cost)
-        amount = q4(qty_d * unit_cost_d)
+        amount_d = q4(qty_d * unit_cost_d)
 
     move = InventoryMove(
         material_id=material_id,
@@ -124,7 +134,7 @@ def post_move(
         move_type=move_type,
         qty=qty_d,
         unit_cost=unit_cost_d,
-        amount=amount,
+        amount=amount_d,
         source_type=source_type,
         source_id=source_id,
         source_line_id=source_line_id,

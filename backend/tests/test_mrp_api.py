@@ -113,6 +113,44 @@ def test_mrp_cycle_400(client, db_session):
     assert "环" in resp.json()["detail"]
 
 
+def test_mrp_partial_po_in_transit_deducted(client, db_session):
+    """回归：partial PO 未收量也须计入在途。PO 100 收 40 后 → 在途 60、现存 40。
+
+    demand RAW 200 → 净需求 = 200 − 现存 40 − 在途 60 = 100
+    （修复前漏算 partial PO 在途 → 净需求 160）。
+    """
+    from erp_lite.models import DocStatus, PurchaseOrderLine
+
+    wh, fg, raw, sup = _seed(db_session, with_bom=False)
+    po = PurchaseOrder(doc_no="PO20261117001", status=DocStatus.approved,
+                       partner_id=sup.id, order_date=date(2026, 11, 17))
+    db_session.add(po)
+    db_session.flush()
+    line = PurchaseOrderLine(po_id=po.id, material_id=raw.id,
+                             qty=Decimal("100"), unit_price=Decimal("5"),
+                             received_qty=Decimal("0"), warehouse_id=wh.id)
+    db_session.add(line)
+    db_session.commit()
+
+    # 入库 40 → PO 转 partial，未收 60
+    resp = client.post(
+        f"/api/v1/purchase-orders/{po.id}/receive",
+        json=[{"line_id": line.id, "qty": 40, "warehouse_id": wh.id}],
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "partial"
+
+    resp = client.post(
+        "/api/v1/mrp/run",
+        json={"demand": [{"material_id": raw.id, "qty": 200}]},
+    )
+    assert resp.status_code == 200, resp.text
+    sugs = resp.json()["suggestions"]
+    assert len(sugs) == 1
+    assert sugs[0]["type"] == "buy"
+    assert Decimal(str(sugs[0]["net_qty"])) == Decimal("100")
+
+
 def test_convert_buy_creates_po_draft_and_idempotent(client, db_session):
     wh, fg, raw, sup = _seed(db_session, with_bom=False)
     raw.default_warehouse_id = wh.id

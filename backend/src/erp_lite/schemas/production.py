@@ -122,6 +122,7 @@ class MoOut(BaseModel):
     planned_qty: Decimal
     warehouse_id: int
     issued_qty_cost: Decimal
+    transferred_cost: Decimal
     extra_cost: Decimal
     remark: str | None
     created_by: str | None

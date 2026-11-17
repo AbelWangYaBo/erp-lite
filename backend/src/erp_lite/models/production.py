@@ -70,6 +70,7 @@ class ManufacturingOrder(Base, DocMixin):
     planned_qty: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
     issued_qty_cost: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
+    transferred_cost: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
     extra_cost: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
 
     material = relationship("Material")

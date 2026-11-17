@@ -52,6 +52,20 @@ def _get_or_404(db: Session, po_id: int) -> PurchaseOrder:
     return obj
 
 
+def _get_or_404_for_update(db: Session, po_id: int) -> PurchaseOrder:
+    """入库用：FOR UPDATE 锁 PO 行后再读。
+
+    PostgreSQL 下该行锁串行化同一 PO 的并发入库，防止并发事务同时通过
+    「剩余可收」校验导致超收；SQLite 忽略 FOR UPDATE（测试内存库单连接串行）。
+    """
+    obj = db.scalar(
+        select(PurchaseOrder).where(PurchaseOrder.id == po_id).with_for_update()
+    )
+    if obj is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="采购订单不存在")
+    return obj
+
+
 @router.get("", response_model=None)
 def list_purchase_orders(
     keyword: str | None = None,
@@ -182,7 +196,7 @@ def receive_purchase_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> PurchaseOrder:
-    po = _get_or_404(db, po_id)
+    po = _get_or_404_for_update(db, po_id)
     if po.status not in (DocStatus.approved, DocStatus.partial):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="仅已审核/部分入库状态可入库"

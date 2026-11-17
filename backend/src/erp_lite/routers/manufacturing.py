@@ -150,9 +150,14 @@ def issue_mo(
     _require_status(mo, (DocStatus.approved, DocStatus.partial), "领料")
     planned = _d(mo.planned_qty)
     if body.lines:
-        # 指定行：物料有 BOM 则按 BOM 递归展开，无 BOM 直接采用
+        # 指定行：物料必须存在（引用校验）；有 BOM 则按 BOM 递归展开，无 BOM 直接采用
         requirements: dict[int, Decimal] = {}
         for line in body.lines:
+            if db.get(Material, line.material_id) is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"物料不存在：{line.material_id}",
+                )
             for mid, qty in expand_requirements(
                 db, line.material_id, _d(line.qty)
             ).items():
@@ -229,8 +234,13 @@ def receive_mo(
         )
     ratio = qty / planned
     extra_cost = _d(body.extra_cost)
-    # v1 简化规则：入库单价 =（累计领料成本 × 本次完工比例 + 本次制费）/ 本次入库数量
-    transferred = q4(_d(mo.issued_qty_cost) * ratio)
+    # 成本结转：本次结转额 = min(累计领料成本×完工比例, 未结转余额)。
+    # 以 transferred_cost 记录已结转额，交错领料/完工时不重复结转、不漏结转。
+    issued = _d(mo.issued_qty_cost)
+    available = q4(issued - _d(mo.transferred_cost))
+    proportional = q4(issued * ratio)
+    transferred = min(proportional, available)
+    # 入库单价 =（本次结转领料成本 + 本次制费）/ 本次入库数量
     unit_cost = q4((transferred + extra_cost) / qty)
     post_move(
         db,
@@ -242,6 +252,7 @@ def receive_mo(
         source_type=DOC_TYPE,
         source_id=mo.id,
     )
+    mo.transferred_cost = q4(_d(mo.transferred_cost) + transferred)
     mo.extra_cost = q4(_d(mo.extra_cost) + extra_cost)
     new_status = DocStatus.completed if completed + qty >= planned else DocStatus.partial
     if new_status != mo.status:
@@ -266,6 +277,33 @@ def close_mo(
     mo = _get_or_404(db, mo_id)
     _require_status(mo, (DocStatus.approved, DocStatus.partial, DocStatus.completed),
                     "关闭")
+    # 关闭结转：剩余未结转成本（issued_qty_cost − transferred_cost）以 adjust 流水
+    # 调增成品库存金额（数量 0 不改存量，单价 = 剩余 / 已完工量，台账重算均价），
+    # 并把 transferred_cost 补齐至累计领料成本，保证成本无残留。
+    issued = _d(mo.issued_qty_cost)
+    transferred = _d(mo.transferred_cost)
+    remaining = q4(issued - transferred)
+    completed = mo_completed_qty(db, mo.id)
+    if remaining > 0 and completed > 0:
+        unit = q4(remaining / completed)
+        post_move(
+            db,
+            material_id=mo.material_id,
+            warehouse_id=mo.warehouse_id,
+            move_type="adjust",
+            qty=0,
+            unit_cost=unit,
+            amount=remaining,
+            source_type=DOC_TYPE,
+            source_id=mo.id,
+        )
+        write_audit(db, DOC_TYPE, mo.id, "close", current_user.username,
+                    field="transferred_cost", old=str(q4(transferred)),
+                    new=str(q4(issued)))
+        write_op_log(db, current_user.username, "manufacturing_order_close",
+                     f"关闭生产工单：{mo.doc_no}，剩余未结转成本 {remaining}"
+                     f"以调整流水调增成品金额（单价 {unit}）")
+        mo.transferred_cost = q4(issued)
     change_status(db, mo, DOC_TYPE, DocStatus.closed, current_user.username,
                   f"关闭生产工单：{mo.doc_no}（剩余在制关闭）")
     db.commit()

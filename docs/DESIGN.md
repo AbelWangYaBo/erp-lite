@@ -68,7 +68,7 @@ erp-lite/
 | bom_lines | bom_id, material_id(子), qty_per, loss_pct |
 | mrp_runs | run_date, demand_type(manual/sales), params_json, result_json |
 | mrp_suggestions | run_id, material_id, type(buy/make), net_qty, converted(bool), converted_doc_id |
-| manufacturing_orders | material_id, planned_qty, warehouse_id, issued_qty_cost(领料成本累计), extra_cost(人工/制费) |
+| manufacturing_orders | material_id, planned_qty, warehouse_id, issued_qty_cost(领料成本累计), transferred_cost(已结转成本), extra_cost(人工/制费) |
 | mo_issues | mo_id, material_id, qty, cost_amount |
 | payables | partner_id, source_type/source_id(采购入库), amount, settled_amount, status(open/partial/settled) |
 | receivables | partner_id, source_type/source_id(销售出库), amount, settled_amount, status |
@@ -108,8 +108,9 @@ erp-lite/
 ## 5. 关键算法
 
 - **移动加权平均**：入库时 `新均价 = (现存金额 + 入库金额) / (现存数量 + 入库数量)`；出库单价取当前均价。现存量=0 时均价清零。
-- **MRP 展开**：对每个需求物料递归展开 BOM（有 BOM → make，无 BOM → buy）；`净需求 = 毛需求 - 现存量 - 在途(已审核PO未收) - 已下达MO未完工`；逐层向下传毛需求。防环：展开路径检测环路直接报错。
-- **编号**：service 层 `SELECT ... FOR UPDATE` 取号，格式 `{PREFIX}{YYYYMMDD}{seq:03d}`。
+- **MRP 展开**：对每个需求物料递归展开 BOM（有 BOM → make，无 BOM → buy）；`净需求 = 毛需求 - 现存量 - 在途(已审核/部分入库 PO 未收量) - 已下达 MO 未完工量`；逐层向下传毛需求。防环：展开路径检测环路直接报错。
+- **编号**：service 层 `SELECT ... FOR UPDATE` 取号，格式 `{PREFIX}{YYYYMMDD}{seq:03d}`；首次取号唯一约束冲突时 rollback 重试（最多 3 次）。
+- **MO 成本结转**：完工入库单价 =（本次结转领料成本 + 本次制费）/ 本次完工量；本次结转额 = `min(累计领料成本×完工比例, 未结转余额 issued_qty_cost−transferred_cost)`，交错领料/完工按 `transferred_cost` 去重，不漏结转。关闭工单时剩余未结转成本以 adjust 流水调增成品库存金额（数量 0 不改存量，单价 = 剩余/已完工量，台账重算均价），`transferred_cost` 补齐至累计领料成本，无残留。
 
 ## 6. 非功能
 

@@ -138,7 +138,11 @@ def create_settlement(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="同一单据在一笔核销中重复出现，请合并金额",
             )
-        target = db.get(model, line.target_id)
+        # PG 下 FOR UPDATE 锁目标 AP/AR 行后再校验剩余额并累加 settled_amount，
+        # 串行化同一单据的并发核销（防超额核销）；SQLite 忽略 FOR UPDATE。
+        target = db.scalar(
+            select(model).where(model.id == line.target_id).with_for_update()
+        )
         if target is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

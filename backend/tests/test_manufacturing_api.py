@@ -211,6 +211,79 @@ def test_close_mo(client, db_session):
     assert resp.json()["status"] == "closed"
 
 
+def test_receive_interleaved_issue_fg_amount_equals_total_cost(client, db_session):
+    """回归：交错领料完工不漏结转。领 10 RAW@10（成本100）→ 完工5 → 再领 10 RAW@10（累计200）
+    → 完工5 → 关闭。成品库存金额须 = 累计领料 200 + extra 0 = 200，数量仍为 10。"""
+    body, wh, fg, raw = _create_mo(client, db_session, planned=10)
+    post_move(db_session, material_id=raw.id, warehouse_id=wh.id,
+              move_type="adjust", qty=Decimal("100"), unit_cost=Decimal("10"),
+              source_type="adjust", source_id=0)
+    db_session.commit()
+    _approve_mo(client, body["id"])
+    resp = client.post(f"/api/v1/manufacturing-orders/{body['id']}/issue",
+                       json={"lines": [{"material_id": raw.id, "qty": 10}]})
+    assert resp.status_code == 200, resp.text
+    resp = client.post(f"/api/v1/manufacturing-orders/{body['id']}/receive",
+                       json={"qty": 5, "extra_cost": 0})
+    assert resp.status_code == 200, resp.text
+    # 再领 10 RAW，均价仍 10 → 累计领料成本 200
+    resp = client.post(f"/api/v1/manufacturing-orders/{body['id']}/issue",
+                       json={"lines": [{"material_id": raw.id, "qty": 10}]})
+    assert resp.status_code == 200, resp.text
+    resp = client.post(f"/api/v1/manufacturing-orders/{body['id']}/receive",
+                       json={"qty": 5, "extra_cost": 0})
+    assert resp.status_code == 200, resp.text
+    resp = client.post(f"/api/v1/manufacturing-orders/{body['id']}/close")
+    assert resp.status_code == 200, resp.text
+    qty, amount = get_stock(db_session, fg.id, wh.id)
+    assert qty == Decimal("10")  # adjust 只调金额不改数量
+    assert amount == Decimal("200")  # = 累计领料 200 + extra 0
+
+
+def test_close_transfers_remaining_cost_no_residue(client, db_session):
+    """回归：close 把剩余未结转成本以 adjust 流水调增成品金额，transferred_cost 无残留。"""
+    body, wh, fg, raw = _create_mo(client, db_session, planned=10)
+    post_move(db_session, material_id=raw.id, warehouse_id=wh.id,
+              move_type="adjust", qty=Decimal("100"), unit_cost=Decimal("10"),
+              source_type="adjust", source_id=0)
+    db_session.commit()
+    _approve_mo(client, body["id"])
+    client.post(f"/api/v1/manufacturing-orders/{body['id']}/issue",
+                json={"lines": [{"material_id": raw.id, "qty": 10}]})  # 成本 100
+    client.post(f"/api/v1/manufacturing-orders/{body['id']}/receive",
+                json={"qty": 5, "extra_cost": 0})  # 按比例结转 50，单价 10
+    resp = client.post(f"/api/v1/manufacturing-orders/{body['id']}/close")
+    assert resp.status_code == 200, resp.text
+    mo = db_session.get(ManufacturingOrder, body["id"])
+    assert Decimal(str(mo.issued_qty_cost)) == Decimal("100")
+    assert Decimal(str(mo.transferred_cost)) == Decimal("100")  # 无残留
+    adjust = db_session.scalar(
+        select(InventoryMove).where(
+            InventoryMove.move_type == "adjust",
+            InventoryMove.source_type == "manufacturing_order",
+            InventoryMove.source_id == body["id"],
+        )
+    )
+    assert adjust is not None
+    assert Decimal(str(adjust.amount)) == Decimal("50")  # 剩余 100-50
+    assert Decimal(str(adjust.qty)) == Decimal("0")
+    qty, amount = get_stock(db_session, fg.id, wh.id)
+    assert qty == Decimal("5")
+    assert amount == Decimal("100")  # 50 完工入库 + 50 关闭调增
+
+
+def test_issue_with_nonexistent_material_400(client, db_session):
+    """回归：领料 lines 中物料不存在 → 400 中文错误（引用校验缺口）。"""
+    body, wh, fg, raw = _create_mo(client, db_session)
+    _approve_mo(client, body["id"])
+    resp = client.post(
+        f"/api/v1/manufacturing-orders/{body['id']}/issue",
+        json={"lines": [{"material_id": 99999, "qty": 5}]},
+    )
+    assert resp.status_code == 400
+    assert "物料不存在" in resp.json()["detail"]
+
+
 def test_issue_before_approve_400(client, db_session):
     body, wh, fg, raw = _create_mo(client, db_session)
     resp = client.post(f"/api/v1/manufacturing-orders/{body['id']}/issue", json={})

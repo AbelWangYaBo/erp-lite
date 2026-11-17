@@ -6,7 +6,17 @@ from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user
-from erp_lite.models import InventoryMove, Material, User
+from erp_lite.models import (
+    Bom,
+    BomLine,
+    InventoryMove,
+    ManufacturingOrder,
+    Material,
+    MoIssue,
+    PurchaseOrderLine,
+    SalesOrderLine,
+    User,
+)
 from erp_lite.routers.common import apply_update_with_diff_audit, paginate
 from erp_lite.schemas import (
     MaterialCreate,
@@ -22,6 +32,16 @@ router = APIRouter(
 
 DOC_TYPE = "material"
 
+# 引用禁删检查表：（模型, 引用来源中文名）
+_REF_CHECKS = (
+    (PurchaseOrderLine, "采购订单行"),
+    (SalesOrderLine, "销售订单行"),
+    (Bom, "BOM"),  # 母件引用（子件行由 BomLine 检查）
+    (BomLine, "BOM 行"),
+    (ManufacturingOrder, "生产工单"),
+    (MoIssue, "生产领料记录"),
+)
+
 
 def _get_or_404(db: Session, material_id: int) -> Material:
     obj = db.get(Material, material_id)
@@ -36,6 +56,19 @@ def _ensure_code_free(db: Session, code: str, exclude_id: int | None = None) -> 
         stmt = stmt.where(Material.id != exclude_id)
     if db.scalar(stmt.limit(1)) is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="物料编码已存在")
+
+
+def _ensure_not_referenced(db: Session, material_id: int) -> None:
+    """库存流水之外的单据引用（PO 行/SO 行/BOM 行/MO/领料记录）任一存在即禁删。"""
+    for model, label in _REF_CHECKS:
+        exists = db.scalar(
+            select(model.id).where(model.material_id == material_id).limit(1)
+        )
+        if exists is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"该物料已被{label}引用，禁止删除",
+            )
 
 
 @router.get("", response_model=MaterialPage)
@@ -112,6 +145,7 @@ def delete_material(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该物料已有库存流水，禁止删除",
         )
+    _ensure_not_referenced(db, material_id)
     write_audit(db, DOC_TYPE, obj.id, "delete", current_user.username)
     write_op_log(db, current_user.username, "material_delete", f"删除物料：{obj.code}")
     db.delete(obj)

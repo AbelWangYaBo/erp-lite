@@ -151,3 +151,123 @@ def test_materials_without_token_401(anon_client):
     assert (
         anon_client.post("/api/v1/materials", json={}).status_code == 401
     )
+
+
+# ---------- 引用禁删（回归：删除引用校验缺口） ----------
+
+
+def _delete_referenced_material(client, ref_builder, expect_word: str):
+    body = _create(client)
+    mid = body["id"]
+    db = client.app.dependency_overrides[get_db]()
+    ref_builder(db, mid)
+    db.commit()
+    resp = client.delete(f"/api/v1/materials/{mid}")
+    assert resp.status_code == 400, resp.text
+    assert expect_word in resp.json()["detail"]
+    assert resp.json()["detail"].endswith("禁止删除")
+
+
+def test_delete_material_referenced_by_po_line_400(client):
+    from erp_lite.models import Partner, PartnerType, PurchaseOrder, PurchaseOrderLine, Warehouse
+
+    def ref(db, mid):
+        from datetime import date
+
+        wh = Warehouse(code="W1", name="一号仓")
+        sup = Partner(code="S1", name="供应商", type=PartnerType.supplier)
+        db.add_all([wh, sup])
+        db.flush()
+        po = PurchaseOrder(doc_no="POTEST000001", status="draft", partner_id=sup.id,
+                           order_date=date(2026, 11, 17))
+        db.add(po)
+        db.flush()
+        db.add(PurchaseOrderLine(po_id=po.id, material_id=mid, qty=10,
+                                 unit_price=1, received_qty=0, warehouse_id=wh.id))
+
+    _delete_referenced_material(client, ref, "采购订单")
+
+
+def test_delete_material_referenced_by_so_line_400(client):
+    from datetime import date
+
+    from erp_lite.models import Partner, PartnerType, SalesOrder, SalesOrderLine, Warehouse
+
+    def ref(db, mid):
+        wh = Warehouse(code="W1", name="一号仓")
+        cus = Partner(code="C1", name="客户", type=PartnerType.customer)
+        db.add_all([wh, cus])
+        db.flush()
+        so = SalesOrder(doc_no="SOTEST000001", status="draft", partner_id=cus.id,
+                        order_date=date(2026, 11, 17))
+        db.add(so)
+        db.flush()
+        db.add(SalesOrderLine(so_id=so.id, material_id=mid, qty=10,
+                              unit_price=1, shipped_qty=0, warehouse_id=wh.id))
+
+    _delete_referenced_material(client, ref, "销售订单")
+
+
+def test_delete_material_referenced_by_bom_line_400(client):
+    from erp_lite.models import Bom
+
+    def ref(db, mid):
+        db.add(Bom(material_id=mid))  # 该物料是 BOM 母件
+
+    _delete_referenced_material(client, ref, "BOM")
+
+
+def test_delete_material_referenced_by_bom_child_line_400(client):
+    """BOM 子件行引用也禁删。"""
+    from sqlalchemy import select
+
+    from erp_lite.models import Bom, BomLine
+
+    body = _create(client)
+    mid = body["id"]
+    db = client.app.dependency_overrides[get_db]()
+    parent = _create(client, code="M-PARENT")
+    db.add(Bom(material_id=parent["id"]))
+    db.flush()
+    db.add(BomLine(bom_id=db.scalar(
+        select(Bom.id).where(Bom.material_id == parent["id"])
+    ), material_id=mid, qty_per=1, loss_pct=0))
+    db.commit()
+    resp = client.delete(f"/api/v1/materials/{mid}")
+    assert resp.status_code == 400
+    assert "BOM" in resp.json()["detail"]
+
+
+def test_delete_material_referenced_by_mo_400(client):
+    from erp_lite.models import ManufacturingOrder, Warehouse
+
+    def ref(db, mid):
+        wh = Warehouse(code="W1", name="一号仓")
+        db.add(wh)
+        db.flush()
+        db.add(ManufacturingOrder(
+            doc_no="MOTEST000001", status="draft", material_id=mid,
+            planned_qty=10, warehouse_id=wh.id))
+
+    _delete_referenced_material(client, ref, "生产工单")
+
+
+def test_delete_material_referenced_by_mo_issue_400(client):
+    from erp_lite.models import ManufacturingOrder, MoIssue, Warehouse
+
+    def ref(db, mid):
+        from erp_lite.models import Material, MaterialCategory
+
+        wh = Warehouse(code="W1", name="一号仓")
+        parent = Material(code="M-MO-FG", name="工单母件", unit="个",
+                          category=MaterialCategory.finished)
+        db.add_all([wh, parent])
+        db.flush()
+        mo = ManufacturingOrder(doc_no="MOTEST000002", status="draft",
+                                material_id=parent.id, planned_qty=10,
+                                warehouse_id=wh.id)
+        db.add(mo)
+        db.flush()
+        db.add(MoIssue(mo_id=mo.id, material_id=mid, qty=1, cost_amount=0))
+
+    _delete_referenced_material(client, ref, "生产领料")

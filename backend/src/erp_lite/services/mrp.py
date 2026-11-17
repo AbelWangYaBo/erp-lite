@@ -13,13 +13,15 @@ from erp_lite.models import (
     ManufacturingOrder,
     Material,
     MoveType,
+    PurchaseOrder,
     PurchaseOrderLine,
 )
 from erp_lite.models.base import DocStatus
 from erp_lite.services.inventory import _d, get_stock, q4
 
-# MO 在途状态：已下达（approved）未完工（partial）
+# 在途单据状态：已审核（approved）与部分执行（partial）都可能有未完成量
 MO_IN_TRANSIT_STATUS = (DocStatus.approved, DocStatus.partial)
+PO_IN_TRANSIT_STATUS = (DocStatus.approved, DocStatus.partial)
 
 
 def get_active_bom(db: Session, material_id: int) -> Bom | None:
@@ -42,13 +44,16 @@ def mo_completed_qty(db: Session, mo_id: int) -> Decimal:
 
 
 def po_in_transit(db: Session, material_id: int) -> Decimal:
-    """在途采购量 = 已审核 PO 未收量汇总。"""
+    """在途采购量 = 已审核/部分入库 PO 的未收量(qty−received_qty)汇总。
+
+    口径与 mo_in_transit 对齐：approved（全部未收）与 partial（剩余未收）都计入。
+    """
     rows = db.execute(
         select(PurchaseOrderLine.qty, PurchaseOrderLine.received_qty)
         .join(PurchaseOrderLine.order)
         .where(
             PurchaseOrderLine.material_id == material_id,
-            PurchaseOrderLine.order.has(status=DocStatus.approved),
+            PurchaseOrderLine.order.has(PurchaseOrder.status.in_(PO_IN_TRANSIT_STATUS)),
         )
     ).all()
     return q4(sum((_d(q) - _d(r) for q, r in rows), Decimal("0")))
