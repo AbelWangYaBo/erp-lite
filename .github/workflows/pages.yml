@@ -1,8 +1,6 @@
-"""GitHub Pages 部署：构建前端静态产物并发布到 https://abelwangyabo.github.io/erp-lite/。
-
-注意：erp-lite 是前后端分离系统，Pages 仅托管前端静态壳（页面结构与交互可浏览，
-后端 API 不可用，登录无法完成）。本地体验请按 README 启动后端 + 前端 dev server。
-"""
+# GitHub Pages 部署：构建前端静态产物并发布到 https://abelwangyabo.github.io/erp-lite/
+# 注意：Pages 仅托管前端静态壳（页面结构与交互可浏览，后端 API 不可用）。
+# 本地完整体验请按 README 启动后端 + 前端 dev server。
 
 name: Deploy Pages
 
