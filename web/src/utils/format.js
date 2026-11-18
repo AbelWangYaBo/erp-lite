@@ -31,10 +31,30 @@ export const MOVE_TYPE_LABELS = {
   purchase_in: '采购入库',
   sale_out: '销售出库',
   mo_issue: '生产领料',
+  mo_issue_return: '领料退回',
   mo_receipt: '完工入库',
+  purchase_return: '采购退货出库',
+  sale_return: '销售退货入库',
   adjust: '库存调整',
+}
+// 单据类型中文名（DocLink 兜底文案 / 追溯与审计展示）
+export const DOC_TYPE_LABELS = {
+  purchase_order: '采购订单',
+  sales_order: '销售订单',
+  manufacturing_order: '生产工单',
+  batch: '批次',
+  stock_count: '盘点单',
+  sales_return: '销售退货单',
+  purchase_return: '采购退货单',
+  payable: '应付',
+  receivable: '应收',
+  settlement: '核销单',
+  partner_cert: '供应商资质',
+  material: '物料',
 }
 export const DOC_TYPE_OPTIONS = [
   'material', 'warehouse', 'partner', 'purchase_order', 'sales_order',
   'bom', 'manufacturing_order', 'payable', 'receivable', 'settlement',
+  'batch', 'partner_cert', 'stock_count', 'sales_return', 'purchase_return',
+  'user', 'inspection_record',
 ]

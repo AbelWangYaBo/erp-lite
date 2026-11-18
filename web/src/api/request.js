@@ -17,7 +17,13 @@ request.interceptors.response.use(
   (res) => res.data,
   (err) => {
     const raw = err.response?.data?.detail
-    const msg = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : err.message || '请求失败'
+    let msg
+    if (Array.isArray(raw)) {
+      // FastAPI 422 校验错误：detail 为数组，转可读文本（loc 去掉首段 body/query）
+      msg = raw.map((e) => `${(e.loc || []).slice(1).join('.')}: ${e.msg}`).join('；')
+    } else {
+      msg = typeof raw === 'string' ? raw : err.message || '请求失败'
+    }
     // silent: 调用方自行处理错误时不弹全局提示
     if (!err.config?.silent) ElMessage.error(msg)
     if (err.response?.status === 401) {

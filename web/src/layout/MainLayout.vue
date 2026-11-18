@@ -12,6 +12,7 @@ const auth = useAuthStore()
 // 菜单分组：基础数据 / 采购 / 销售 / 库存 / 生产 / 质量 / 财务 / 审计 / 系统
 // actions：持有其中任一动作才显示该项（PRD-v2 §2.5 矩阵）；不配 = 全员可见
 const menus = [
+  { group: '工作台', items: [{ path: '/dashboard', title: '工作台' }] },
   {
     group: '基础数据',
     items: [
@@ -20,9 +21,27 @@ const menus = [
       { path: '/partners', title: '往来单位', actions: ['master.write'] },
     ],
   },
-  { group: '采购管理', items: [{ path: '/purchase-orders', title: '采购订单', actions: ['po.create', 'po.receive'] }] },
-  { group: '销售管理', items: [{ path: '/sales-orders', title: '销售订单', actions: ['so.create', 'so.ship'] }] },
-  { group: '库存管理', items: [{ path: '/inventory', title: '库存查询' }] },
+  {
+    group: '采购管理',
+    items: [
+      { path: '/purchase-orders', title: '采购订单', actions: ['po.create', 'po.receive'] },
+      { path: '/purchase-returns', title: '采购退货' },
+    ],
+  },
+  {
+    group: '销售管理',
+    items: [
+      { path: '/sales-orders', title: '销售订单', actions: ['so.create', 'so.ship'] },
+      { path: '/sales-returns', title: '销售退货', actions: ['ar.read'] },
+    ],
+  },
+  {
+    group: '库存管理',
+    items: [
+      { path: '/inventory', title: '库存查询' },
+      { path: '/stock-counts', title: '盘点', actions: ['stockcount.create', 'stockcount.post'] },
+    ],
+  },
   {
     group: '生产管理',
     items: [
@@ -35,17 +54,17 @@ const menus = [
     group: '质量管理',
     items: [
       { path: '/batches', title: '批次台账' },
-      { path: '/inspections', title: '检验工作台', actions: ['inspect.judge'] },
-      { path: '/partner-certs', title: '供应商资质', actions: ['partner_cert.write', 'partner_cert.audit'] },
+      { path: '/inspections', title: '检验工作台', actions: ['batch.inspect', 'batch.judge'] },
+      { path: '/partner-certs', title: '供应商资质', actions: ['partner_cert.write', 'partner_cert.audit', 'partner_cert.revoke'] },
     ],
   },
   {
     group: '财务管理',
     items: [
-      { path: '/payables', title: '应付账款', actions: ['settlement.create'] },
-      { path: '/receivables', title: '应收账款', actions: ['settlement.create'] },
-      { path: '/settlements', title: '收付款核销', actions: ['settlement.create'] },
-      { path: '/statement', title: '对账单', actions: ['settlement.create'] },
+      { path: '/payables', title: '应付账款', actions: ['ap.read'] },
+      { path: '/receivables', title: '应收账款', actions: ['ar.read'] },
+      { path: '/settlements', title: '收付款核销', actions: ['settlement.create', 'settlement.reverse'] },
+      { path: '/statement', title: '对账单', actions: ['statement.read'] },
     ],
   },
   { group: '审计追踪', items: [{ path: '/audit', title: '审计追踪', actions: ['audit.read'] }] },
@@ -70,7 +89,7 @@ async function onSwitch(account) {
   try {
     await auth.switchTo(account)
     ElMessage.success(`已切换为 ${account.label}（${account.username}）`)
-    router.push('/batches')
+    router.push('/dashboard')
     setTimeout(() => window.location.reload(), 300)
   } catch {
     // 登录失败：拦截器已提示
