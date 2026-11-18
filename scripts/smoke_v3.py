@@ -145,7 +145,8 @@ def main() -> int:
         "lines": [{"material_id": raw["id"], "qty": "10", "unit_price": "5",
                    "warehouse_id": wh_main["id"]}],
     }
-    call_expect("purchase", "POST", "/purchase-orders", 400, "过期供应商建 PO")
+    call_expect("purchase", "POST", "/purchase-orders", 400, "过期供应商建 PO",
+                json=po_body)
 
     print("== 4. PO1：建单 → 自审拦截 → 审核 ==")
     sup1 = next(p for p in js(call("admin", "GET", "/partners"))["items"] if p["code"] == "SUP-001")
@@ -190,17 +191,20 @@ def main() -> int:
     rec = js(call_expect("qc", "POST", f"/batches/{lot1['id']}/inspect", 200,
                          "qc 录入 LOT-v3-1 检验记录（建议 pass）", json=inspect_body))
     check(rec.get("conclusion") is None, "录入后待判定（conclusion 为空）")
-    call_expect("qc", "POST", f"/batches/{lot1['id']}/judge", 400, "qc 自判（不得自审）")
+    call_expect("qc", "POST", f"/batches/{lot1['id']}/judge", 403,
+                "qc 无复核权限（judge 归 qa，双段制硬分离）", json={"conclusion": "pass"})
     call_expect("qa", "POST", f"/batches/{lot1['id']}/judge", 200,
                 "qa 复核判定 pass → qualified", json={"conclusion": "pass"})
     lot1 = batch_by_no(f"LOT-v3-1-{suffix}")
     expect("LOT-v3-1 insp_status", lot1["insp_status"], "qualified")
 
     print("== 7. 不合格批次：录入 fail → 判定 → 报废处置闭环 ==")
-    call_expect("qc", "POST", f"/batches/{lot2['id']}/inspect", 200,
-                "qc 录入 LOT-v3-2（建议 fail）",
+    call_expect("admin", "POST", f"/batches/{lot2['id']}/inspect", 200,
+                "admin 录入 LOT-v3-2（建议 fail）",
                 json={"items": [{"name": "外观", "result": "锈蚀"}],
                       "suggest_conclusion": "fail"})
+    call_expect("admin", "POST", f"/batches/{lot2['id']}/judge", 400,
+                "admin 自判自己录入的检验（不得自审）", json={"conclusion": "fail"})
     call_expect("qa", "POST", f"/batches/{lot2['id']}/judge", 200,
                 "qa 判定 fail → rejected", json={"conclusion": "fail"})
     lot2 = batch_by_no(f"LOT-v3-2-{suffix}")
@@ -216,11 +220,12 @@ def main() -> int:
 
     print("== 8. MRP + 转单（资质拦截） ==")
     semi = next(m for m in materials["items"] if m["code"] == "SEMI-BRACKET")
-    call_expect("production", "POST", "/mrp/run", 200, "MRP 运算（demand SEMI 6）",
-                json={"demands": [{"material_id": semi["id"], "qty": "6"}]})
+    # demand 11 → RAW 需求 22 > qualified 现存 20 → 产生 buy 建议（缺口 2）
+    call_expect("production", "POST", "/mrp/run", 200, "MRP 运算（demand SEMI 11）",
+                json={"demand": [{"material_id": semi["id"], "qty": "11"}]})
     sugs = js(call("production", "GET", "/mrp/suggestions", params={"converted": "false"}))["items"]
     buy_sug = next((s for s in sugs if s["type"] == "buy" and s["material_id"] == raw["id"]), None)
-    check(buy_sug is not None, "MRP 产出 RAW buy 建议")
+    check(buy_sug is not None, "MRP 产出 RAW buy 建议（需求 22 > 可用 20）")
     if buy_sug:
         call_expect("production", "POST", "/mrp/suggestions/convert", 400,
                     "转单到过期供应商（资质拦截）",
@@ -239,17 +244,11 @@ def main() -> int:
                     "admin 审核 MRP 转 PO（purchase 建单不自审）")
 
     print("== 9. MO：下达 → 领料 → 退回 → 完工（规则 B） ==")
-    make_sug = next((s for s in sugs if s["type"] == "make" and s["material_id"] == semi["id"]), None)
-    mo_id = None
-    if make_sug:
-        r = call_expect("production", "POST", "/mrp/suggestions/convert", 200,
-                        "转 make 建议 → MO(SEMI 6) 草稿", json={"ids": [make_sug["id"]]})
-        mo_id = js(r)["converted"][0]["doc_id"]
-    else:
-        r = call_expect("production", "POST", "/manufacturing-orders", 200, "手建 MO(SEMI 6)",
-                        json={"material_id": semi["id"], "planned_qty": "6",
-                              "warehouse_id": wh_main["id"]})
-        mo_id = js(r)["id"]
+    # make 建议留置不转（演示 MRP 建议流）；MO 走手建定长 6，领料/退料/完工数字断言稳定
+    r = call_expect("production", "POST", "/manufacturing-orders", 200, "手建 MO(SEMI 6)",
+                    json={"material_id": semi["id"], "planned_qty": "6",
+                          "warehouse_id": wh_main["id"], "remark": "v3 冒烟工单"})
+    mo_id = js(r)["id"]
     call_expect("production", "POST", f"/manufacturing-orders/{mo_id}/approve", 400,
                 "production 自下达 MO（不得自审）")
     call_expect("admin", "POST", f"/manufacturing-orders/{mo_id}/approve", 200, "admin 下达 MO")
@@ -346,11 +345,16 @@ def main() -> int:
                     json={"warehouse_id": wh_main["id"], "remark": "v3 冒烟盘点"})
     sc = js(r)
     check(len(sc["lines"]) > 0, f"快照 {len(sc['lines'])} 行")
-    target_line = next(l for l in sc["lines"] if l["material_id"] == raw["id"] and l["batch_id"] == lot1["id"])
-    upd = {"lines": [{"line_id": target_line["id"],
-                      "counted_qty": str(dec(target_line["system_qty"]) - 1)}]}
+    # 全部行必须录实盘（业务校验：存在未录行则 post 400）；目标行盘亏 1，其余账实相符
+    upd_lines = [
+        {"line_id": l["id"],
+         "counted_qty": str(dec(l["system_qty"]) - 1)
+         if (l["material_id"] == raw["id"] and l["batch_id"] == lot1["id"])
+         else str(dec(l["system_qty"]))}
+        for l in sc["lines"]
+    ]
     call_expect("warehouse", "PUT", f"/inventory/stock-counts/{sc['id']}", 200,
-                "录实盘（盘亏 1）", json=upd)
+                "录实盘（全部行，目标行盘亏 1）", json={"lines": upd_lines})
     call_expect("warehouse", "POST", f"/inventory/stock-counts/{sc['id']}/post", 403,
                 "warehouse 过账 403（post 归 finance）")
     call_expect("finance", "POST", f"/inventory/stock-counts/{sc['id']}/post", 200,
@@ -360,16 +364,21 @@ def main() -> int:
     call_expect("finance", "POST", f"/inventory/stock-counts/{sc['id']}/post", 400,
                 "重复过账 400")
 
-    print("== 14. 资质：录入 → 自审拦截 → 审核 → 撤销 → 拦截生效 ==")
+    print("== 14. 资质：录入 → 审核 → 自审拦截 → 撤销闭环 ==")
     cert_body = {"partner_id": sup1["id"], "cert_name": "质量管理体系认证",
                  "cert_no": f"CERT-v3-{suffix}", "issuer": "认证机构",
                  "valid_from": today.isoformat(),
                  "valid_until": (today + timedelta(days=365)).isoformat()}
     cert = js(call_expect("purchase", "POST", "/partner-certs", 200, "purchase 录入资质",
                           json=cert_body))
-    call_expect("purchase", "POST", f"/partner-certs/{cert['id']}/audit", 400, "purchase 自审资质")
     call_expect("qa", "POST", f"/partner-certs/{cert['id']}/audit", 200, "qa 审核资质")
-    call_expect("qa", "POST", f"/partner-certs/{cert['id']}/revoke", 400, "qa 撤销自己审核的资质（不得自审）")
+    cert2_body = dict(cert_body, cert_no=f"CERT-v3-adm-{suffix}", cert_name="Admin自测证照")
+    cert2 = js(call_expect("admin", "POST", "/partner-certs", 200, "admin 录入第二张资质",
+                           json=cert2_body))
+    call_expect("admin", "POST", f"/partner-certs/{cert2['id']}/audit", 400,
+                "admin 自审自己录入的资质（不得自审）")
+    call_expect("qa", "POST", f"/partner-certs/{cert['id']}/revoke", 400,
+                "qa 撤销自己审核的资质（不得自审）", json={"reason": "测试"})
     call_expect("admin", "POST", f"/partner-certs/{cert['id']}/revoke", 200,
                 "admin 撤销资质", json={"reason": "证照吊销演示"})
 

@@ -49,8 +49,20 @@ class SalesReturnCreate(BaseModel):
     reason: str | None = Field(default=None, max_length=255)
 
 
-class SalesReturnOut(_PurchaseReturnOut):
+class SalesReturnOut(BaseModel):
+    """销售退货出参（独立定义：不带采购侧 po_id 必填字段）。"""
+
+    id: int
+    doc_no: str
     so_id: int
+    batch_id: int
+    qty: Decimal
+    amount: Decimal
+    reason: str | None
+    created_by: str | None
+    created_at: object
+
+    model_config = {"from_attributes": True}
 
 
 @purchase_returns_router.get("")

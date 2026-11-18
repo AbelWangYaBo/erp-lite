@@ -225,9 +225,9 @@ def unissue_mo(
         )
         return q4(total or 0)
 
-    issued_qty = _net(MoveType.mo_issue)
-    returned_qty = _net(MoveType.mo_issue_return)
-    net = q4(issued_qty - returned_qty)
+    issued_qty = _net(MoveType.mo_issue)  # 领料流水为负（出库）
+    returned_qty = _net(MoveType.mo_issue_return)  # 退回流水为正（入库）
+    net = q4(-issued_qty - returned_qty)  # 净领量 = |累计领料| − 已退量
     if _d(body.qty) > net:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
