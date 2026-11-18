@@ -16,7 +16,8 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: process.env.VITE_API_TARGET || 'http://localhost:8000',
+        // 本机 8000 被其他服务占用（ask-gateway），erp-lite 后端固定 8100；VITE_API_TARGET 仅作临时覆盖
+        target: process.env.VITE_API_TARGET || 'http://localhost:8100',
         changeOrigin: true,
       },
     },

@@ -23,6 +23,11 @@ const SOURCE_LABELS = {
   adjust: '库存调整',
 }
 const sourceLabel = (row) => `${SOURCE_LABELS[row.source_type] || row.source_type} #${row.source_id}`
+const DISPOSITION_META = {
+  return: { label: '退货', type: 'warning' },
+  destroy: { label: '销毁', type: 'danger' },
+}
+const dispositionMeta = (d) => DISPOSITION_META[d] || { label: d || '-', type: 'info' }
 
 async function load() {
   loading.value = true
@@ -119,6 +124,20 @@ onMounted(async () => {
       <el-table-column label="批次均价" align="right" width="110">
         <template #default="{ row }">{{ row.avg_cost != null ? fmtMoney(row.avg_cost) : '-' }}</template>
       </el-table-column>
+      <el-table-column label="损失金额" align="right" width="110">
+        <template #default="{ row }">{{ Number(row.loss_amount) > 0 ? fmtMoney(row.loss_amount) : '-' }}</template>
+      </el-table-column>
+      <el-table-column label="处置方式" width="90">
+        <template #default="{ row }">
+          <el-tag v-if="row.disposition" :type="dispositionMeta(row.disposition).type" size="small">
+            {{ dispositionMeta(row.disposition).label }}
+          </el-tag>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="处置备注" min-width="120" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.disposition_remark || '-' }}</template>
+      </el-table-column>
       <el-table-column label="来源单据" min-width="140">
         <template #default="{ row }">{{ sourceLabel(row) }}</template>
       </el-table-column>
@@ -153,6 +172,13 @@ onMounted(async () => {
           <el-tag :type="statusMeta(traceBatch.insp_status).type" size="small">{{ statusMeta(traceBatch.insp_status).label }}</el-tag>
         </el-descriptions-item>
       </el-descriptions>
+      <el-alert
+        v-if="traceBatch && Number(traceBatch.loss_amount) > 0"
+        :title="`该批次不合格销毁损失 ${fmtMoney(traceBatch.loss_amount)}，现存已清零并关闭留痕`"
+        type="error"
+        :closable="false"
+        style="margin-bottom: 12px"
+      />
       <el-tabs v-model="traceTab" @tab-change="onTraceTab">
         <el-tab-pane label="正向追溯" name="forward">
           <div v-loading="traceLoading">
@@ -165,10 +191,10 @@ onMounted(async () => {
             <template v-if="traceData">
               <el-table :data="traceData.links" border size="small">
                 <el-table-column prop="via_doc" label="经由单据" min-width="160" />
-                <el-table-column label="下游批次" min-width="150">
+                <el-table-column label="所耗批次" min-width="150">
                   <template #default="{ row }">{{ row.to_batch?.batch_no }}</template>
                 </el-table-column>
-                <el-table-column label="下游批次状态" width="110">
+                <el-table-column label="所耗批次状态" width="110">
                   <template #default="{ row }">
                     <el-tag :type="statusMeta(row.to_batch?.insp_status).type" size="small">
                       {{ statusMeta(row.to_batch?.insp_status).label }}
@@ -197,10 +223,10 @@ onMounted(async () => {
             <template v-if="traceData">
               <el-table :data="traceData.links" border size="small">
                 <el-table-column prop="via_doc" label="经由单据" min-width="160" />
-                <el-table-column label="上游批次" min-width="150">
+                <el-table-column label="流向批次" min-width="150">
                   <template #default="{ row }">{{ row.to_batch?.batch_no }}</template>
                 </el-table-column>
-                <el-table-column label="上游批次状态" width="110">
+                <el-table-column label="流向批次状态" width="110">
                   <template #default="{ row }">
                     <el-tag :type="statusMeta(row.to_batch?.insp_status).type" size="small">
                       {{ statusMeta(row.to_batch?.insp_status).label }}

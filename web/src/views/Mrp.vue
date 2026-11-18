@@ -66,17 +66,48 @@ function onSelectChange(rows) {
   selected.value = rows
 }
 
+// 采购(buy)建议转单必须先选供应商（后端 400 要求 partner_id）
+const suppliers = ref([])
+const convertVisible = ref(false)
+const convertForm = reactive({ partner_id: null })
+
+async function openConvertDialog() {
+  if (!suppliers.value.length) {
+    const ps = await request.get('/partners', { params: { page_size: 100 } })
+    suppliers.value = ps.items.filter((p) => p.type === 'supplier')
+  }
+  convertForm.partner_id = null
+  convertVisible.value = true
+}
+
+async function doConvert(partnerId) {
+  await ElMessageBox.confirm(`将选中的 ${selected.value.length} 条建议转为采购/生产工单草稿？`, '转单确认', { type: 'warning' })
+  const ids = selected.value.map((s) => s.id)
+  await request.post('/mrp/suggestions/convert', partnerId ? { ids, partner_id: partnerId } : { ids })
+  ElMessage.success('转单成功：采购订单/生产工单草稿已生成，请到对应列表审核或下达')
+  convertVisible.value = false
+  selected.value = []
+  loadSuggestions()
+}
+
 async function convert() {
   if (!selected.value.length) {
     ElMessage.warning('请先勾选要转单的建议')
     return
   }
-  await ElMessageBox.confirm(`将选中的 ${selected.value.length} 条建议转为采购/生产工单草稿？`, '转单确认', { type: 'warning' })
-  const ids = selected.value.map((s) => s.id)
-  await request.post('/mrp/suggestions/convert', { ids })
-  ElMessage.success('转单成功')
-  selected.value = []
-  loadSuggestions()
+  if (selected.value.some((s) => s.type === 'buy')) {
+    await openConvertDialog()
+    return
+  }
+  await doConvert(null)
+}
+
+async function submitConvert() {
+  if (!convertForm.partner_id) {
+    ElMessage.warning('请选择供应商')
+    return
+  }
+  await doConvert(convertForm.partner_id)
 }
 
 onMounted(async () => {
@@ -160,6 +191,21 @@ onMounted(async () => {
     <div class="demand-actions">
       <el-button type="primary" @click="convert">一键转单</el-button>
     </div>
+
+    <!-- 采购建议转单前选择供应商 -->
+    <el-dialog v-model="convertVisible" title="选择转单供应商" width="420px">
+      <el-form label-width="90px">
+        <el-form-item label="供应商" required>
+          <el-select v-model="convertForm.partner_id" filterable style="width: 100%" placeholder="必选（用于生成采购订单）">
+            <el-option v-for="p in suppliers" :key="p.id" :label="`${p.code} ${p.name}`" :value="p.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="convertVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitConvert">确认转单</el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 

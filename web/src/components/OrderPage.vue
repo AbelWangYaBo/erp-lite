@@ -20,6 +20,7 @@ const actionAuth = {
   void: computed(() => auth.has(isPO.value ? 'po.void' : 'so.void')),
   close: computed(() => auth.has(isPO.value ? 'po.close' : 'so.close')),
   inOut: computed(() => auth.has(isPO.value ? 'po.receive' : 'so.ship')),
+  reject: computed(() => auth.has(isPO.value ? 'po.reject' : 'so.reject')),
 }
 
 // ---------- 列表 ----------
@@ -92,6 +93,9 @@ async function submitCreate() {
     ElMessage.warning('请至少填写一行有效的物料明细')
     return
   }
+  // 部分行被过滤时显式提示（不再静默丢弃）
+  const dropped = createForm.lines.length - lines.length
+  if (dropped > 0) ElMessage.warning(`${dropped} 行缺物料/仓库已忽略`)
   const payload = {
     partner_id: createForm.partner_id,
     order_date: createForm.order_date,
@@ -137,8 +141,10 @@ function lineAmount(l) {
 // ---------- 状态动作（按状态显隐） ----------
 const canApprove = (s) => s === 'draft'
 const canInOut = (s) => ['approved', 'partial'].includes(s)
-const canVoid = (s) => ['draft', 'approved', 'partial'].includes(s)
+// v3 修复：partial 作废后端 400，仅 draft/approved 可作废
+const canVoid = (s) => ['draft', 'approved'].includes(s)
 const canClose = (s) => ['approved', 'partial'].includes(s)
+const canReject = (s) => s === 'approved'
 
 const ACTION_TEXT = { approve: '审核', void: '作废', close: '关闭' }
 
@@ -147,6 +153,23 @@ async function doAction(action) {
   await ElMessageBox.confirm(`确认${text}该${isPO.value ? '采购' : '销售'}订单？`, '操作确认', { type: 'warning' })
   await request.post(`${base.value}/${detail.value.id}/${action}`)
   ElMessage.success(`${text}成功`)
+  detail.value = await request.get(`${base.value}/${detail.value.id}`)
+  load()
+}
+
+// ---------- 拒绝（approved → draft，原因留痕） ----------
+async function doReject() {
+  const { value } = await ElMessageBox.prompt(
+    '拒绝后订单退回草稿，创建人可修改后重新提交审核',
+    `拒绝${isPO.value ? '采购' : '销售'}订单`,
+    {
+      type: 'warning',
+      inputPlaceholder: '请输入拒绝原因（必填）',
+      inputValidator: (v) => (v && v.trim() ? true : '拒绝原因不能为空'),
+    },
+  )
+  await request.post(`${base.value}/${detail.value.id}/reject`, { reason: value.trim() })
+  ElMessage.success('已退回草稿：创建人可修改后重新提交审核')
   detail.value = await request.get(`${base.value}/${detail.value.id}`)
   load()
 }
@@ -227,10 +250,10 @@ async function submitInOut() {
     return
   }
   await request.post(`${base.value}/${detail.value.id}/${isPO.value ? 'receive' : 'ship'}`, body)
-  // SO 成品出库：提示带 UDI-DI + 批号（GMP 追溯信息）
+  // PO 批次物料入库 → 生成待检批次（v3 双段制：qc 录入 → qa 判定）；SO 出库 → 生成应收（finance 核销）
   if (isPO.value) {
-    const batches = selected.filter((r) => r.needBatch).map((r) => `${mlabel(r.material_id)} 批次 ${r.batch_no.trim()}`)
-    ElMessage.success(`入库成功${batches.length ? '：' + batches.join('；') : ''}`)
+    const batches = selected.filter((r) => r.needBatch).map((r) => r.batch_no.trim())
+    ElMessage.success(`入库成功${batches.length ? `：批次 ${batches.join('、')} 已进待检，qc 可录入检验记录` : ''}`)
   } else {
     const infos = selected
       .filter((r) => r.needBatch)
@@ -242,7 +265,7 @@ async function submitInOut() {
       })
     ElMessage({
       type: 'success',
-      message: infos.length ? `出库成功：${infos.join('；')}` : '出库成功',
+      message: `${infos.length ? `出库成功：${infos.join('；')}，` : '出库成功，'}应收已生成，finance 可核销`,
       duration: 6000,
     })
   }
@@ -379,6 +402,13 @@ onMounted(async () => {
       <div v-loading="detailLoading">
         <template v-if="detail">
           <div class="detail-head">
+            <el-alert
+              v-if="detail.status === 'draft' && detail.reject_reason"
+              :title="`上次审核拒绝原因：${detail.reject_reason}`"
+              type="error"
+              :closable="false"
+              style="margin-bottom: 12px"
+            />
             <el-descriptions :column="3" size="small" border>
               <el-descriptions-item label="单号">{{ detail.doc_no }}</el-descriptions-item>
               <el-descriptions-item label="状态"><StatusTag :status="detail.status" /></el-descriptions-item>
@@ -391,6 +421,7 @@ onMounted(async () => {
             <div class="actions">
               <el-button v-if="canApprove(detail.status) && actionAuth.approve.value" type="primary" size="small" @click="doAction('approve')">审核</el-button>
               <el-button v-if="canInOut(detail.status) && actionAuth.inOut.value" type="success" size="small" @click="openInOut">{{ inOutLabel }}</el-button>
+              <el-button v-if="canReject(detail.status) && actionAuth.reject.value" type="warning" size="small" @click="doReject">拒绝</el-button>
               <el-button v-if="canClose(detail.status) && actionAuth.close.value" type="warning" size="small" @click="doAction('close')">关闭</el-button>
               <el-button v-if="canVoid(detail.status) && actionAuth.void.value" type="danger" size="small" @click="doAction('void')">作废</el-button>
             </div>
@@ -488,8 +519,14 @@ onMounted(async () => {
               <el-option
                 v-for="b in batchOptions[row.material_id] || []"
                 :key="b.id"
-                :label="b.batch_no"
+                :label="`${b.batch_no}（合格）`"
                 :value="b.id"
+              />
+              <el-option
+                v-if="!(batchOptions[row.material_id] || []).length"
+                disabled
+                label="该物料暂无合格批次（待检/不合格批次不可用）"
+                value="__empty"
               />
             </el-select>
             <span v-else style="color:#999">—</span>

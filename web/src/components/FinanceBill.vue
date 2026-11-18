@@ -1,7 +1,8 @@
 <script setup>
-// 应付/应收共用列表（列表 + 状态 tag + 金额右对齐）
+// 应付/应收共用列表（列表 + 状态 tag + 金额右对齐 + 来源单据跳转）
 import { computed, onMounted, reactive, ref } from 'vue'
 import request from '@/api/request'
+import DocLink from '@/components/DocLink.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { fmtMoney } from '@/utils/format'
 
@@ -13,7 +14,7 @@ const title = computed(() => (isAP.value ? '应付' : '应收'))
 const list = ref([])
 const total = ref(0)
 const loading = ref(false)
-const query = reactive({ page: 1, page_size: 20, status: '' })
+const query = reactive({ page: 1, page_size: 20, status: '', partner_id: null })
 const partners = ref([])
 const pname = (id) => partners.value.find((p) => p.id === id)?.name || id
 
@@ -22,6 +23,7 @@ async function load() {
   try {
     const params = { page: query.page, page_size: query.page_size }
     if (query.status) params.status = query.status
+    if (query.partner_id) params.partner_id = query.partner_id
     const d = await request.get(base.value, { params })
     list.value = d.items
     total.value = d.total
@@ -52,6 +54,9 @@ onMounted(async () => {
         <el-option label="部分结算" value="partial" />
         <el-option label="已结清" value="settled" />
       </el-select>
+      <el-select v-model="query.partner_id" clearable filterable placeholder="往来单位" style="width: 200px" @change="onSearch">
+        <el-option v-for="p in partners" :key="p.id" :label="`${p.code} ${p.name}`" :value="p.id" />
+      </el-select>
       <el-button type="primary" @click="onSearch">搜索</el-button>
       <span class="spacer" />
       <span class="title">{{ title }}账款（由出入库自动生成）</span>
@@ -61,8 +66,10 @@ onMounted(async () => {
       <el-table-column label="往来单位" min-width="140">
         <template #default="{ row }">{{ pname(row.partner_id) }}</template>
       </el-table-column>
-      <el-table-column label="来源" min-width="130">
-        <template #default="{ row }">{{ row.source_type }}#{{ row.source_id }}</template>
+      <el-table-column label="来源" min-width="150">
+        <template #default="{ row }">
+          <DocLink :type="row.source_type" :id="row.source_id" :no="row.source_no || ''" />
+        </template>
       </el-table-column>
       <el-table-column label="金额" align="right" width="130">
         <template #default="{ row }">{{ fmtMoney(row.amount) }}</template>

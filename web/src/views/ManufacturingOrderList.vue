@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
 import StatusTag from '@/components/StatusTag.vue'
 import { useAuthStore } from '@/stores/auth'
-import { fmtMoney } from '@/utils/format'
+import { fmtMoney, fmtTime } from '@/utils/format'
 
 const auth = useAuthStore()
 
@@ -43,7 +43,7 @@ function onSearch() {
 // ---------- 新建 ----------
 const createVisible = ref(false)
 const createRef = ref()
-const createForm = reactive({ material_id: null, planned_qty: 1, warehouse_id: null })
+const createForm = reactive({ material_id: null, planned_qty: 1, warehouse_id: null, remark: '' })
 const createRules = {
   material_id: [{ required: true, message: '请选择生产物料', trigger: 'change' }],
   warehouse_id: [{ required: true, message: '请选择入库仓库', trigger: 'change' }],
@@ -53,6 +53,7 @@ function openCreate() {
   createForm.material_id = null
   createForm.planned_qty = 1
   createForm.warehouse_id = null
+  createForm.remark = ''
   createVisible.value = true
 }
 
@@ -62,8 +63,9 @@ async function submitCreate() {
     material_id: createForm.material_id,
     planned_qty: createForm.planned_qty,
     warehouse_id: createForm.warehouse_id,
+    remark: createForm.remark || null,
   })
-  ElMessage.success('工单已创建')
+  ElMessage.success('工单已创建（草稿）：请下达后领料生产')
   createVisible.value = false
   load()
 }
@@ -78,15 +80,17 @@ async function openDetail(row) {
   detailLoading.value = true
   try {
     detail.value = await request.get(`/manufacturing-orders/${row.id}`)
+    loadAudits(row.id)
   } finally {
     detailLoading.value = false
   }
 }
 
+// v3 修复：MoOut 已返回 received_qty/completed_qty（原字段不存在恒显示 0）
 const receivedQty = computed(() => {
   const mo = detail.value
   if (!mo) return null
-  return mo.received_qty ?? mo.completed_qty ?? null
+  return mo.received_qty ?? mo.completed_qty ?? 0
 })
 
 // ---------- 状态动作 ----------
@@ -94,22 +98,40 @@ const canRelease = (s) => s === 'draft'
 const canIssue = (s) => ['approved', 'partial'].includes(s)
 const canReceive = (s) => ['approved', 'partial'].includes(s)
 const canClose = (s) => ['approved', 'partial', 'completed'].includes(s)
+const canVoid = (s) => s === 'draft'
+const canReject = (s) => s === 'approved'
 
-const ACTION_TEXT = { approve: '下达', close: '关闭' }
+const ACTION_TEXT = { approve: '下达', void: '作废', close: '关闭' }
 // 按钮级权限（PRD-v2 §2.5：MO 建改审领产 production/admin）
 const canCreate = computed(() => auth.has('mo.create'))
 const actionAuth = {
   approve: computed(() => auth.has('mo.release')),
   issue: computed(() => auth.has('mo.issue')),
+  unissue: computed(() => auth.has('mo.unissue')),
   receive: computed(() => auth.has('mo.receive')),
   close: computed(() => auth.has('mo.close')),
+  void: computed(() => auth.has('mo.void')),
+  reject: computed(() => auth.has('mo.reject')),
 }
 
 async function doAction(action) {
   const text = ACTION_TEXT[action]
   await ElMessageBox.confirm(`确认${text}该生产工单？`, '操作确认', { type: 'warning' })
   await request.post(`/manufacturing-orders/${detail.value.id}/${action}`)
-  ElMessage.success(`${text}成功`)
+  ElMessage.success(`${text}成功${action === 'void' ? '：工单已关闭留痕' : ''}`)
+  detail.value = await request.get(`/manufacturing-orders/${detail.value.id}`)
+  load()
+}
+
+// ---------- 拒绝（approved → draft，原因留痕；后端校验无领料记录才允许） ----------
+async function doReject() {
+  const { value } = await ElMessageBox.prompt('拒绝后工单退回草稿，创建人可修改后重新下达', '拒绝生产工单', {
+    type: 'warning',
+    inputPlaceholder: '请输入拒绝原因（必填）',
+    inputValidator: (v) => (v && v.trim() ? true : '拒绝原因不能为空'),
+  })
+  await request.post(`/manufacturing-orders/${detail.value.id}/reject`, { reason: value.trim() })
+  ElMessage.success('已退回草稿：创建人可修改后重新提交下达')
   detail.value = await request.get(`/manufacturing-orders/${detail.value.id}`)
   load()
 }
@@ -166,18 +188,53 @@ async function submitIssue() {
       batch_id: r.needBatch ? r.batch_id : null,
     })),
   })
-  ElMessage.success('领料成功')
+  ElMessage.success('领料成功：物料已出库计入工单成本，可完工入库或继续领料')
   issueVisible.value = false
+  detail.value = await request.get(`/manufacturing-orders/${detail.value.id}`)
+  load()
+}
+
+// ---------- 领料退回（mo.unissue：按 物料+批次 退回指定数量，红字冲回） ----------
+const unissueVisible = ref(false)
+const unissueForm = reactive({ material_id: null, qty: 1, batch_id: null })
+
+function openUnissue(row) {
+  unissueForm.material_id = row.material_id
+  unissueForm.qty = 1
+  unissueForm.batch_id = null
+  unissueVisible.value = true
+}
+
+async function submitUnissue() {
+  if (!unissueForm.qty || Number(unissueForm.qty) <= 0) {
+    ElMessage.warning('请输入退回数量')
+    return
+  }
+  const m = materials.value.find((x) => x.id === unissueForm.material_id)
+  if (m?.batch_required && !unissueForm.batch_id) {
+    ElMessage.warning(`物料「${mlabel(unissueForm.material_id)}」已启用批次管理，退回必须填写批次ID`)
+    return
+  }
+  await request.post(`/manufacturing-orders/${detail.value.id}/unissue`, {
+    material_id: unissueForm.material_id,
+    qty: unissueForm.qty,
+    batch_id: unissueForm.batch_id || null,
+  })
+  ElMessage.success('退料成功：成本已按原领料单价冲回，批次现存回增，可重新领料')
+  unissueVisible.value = false
   detail.value = await request.get(`/manufacturing-orders/${detail.value.id}`)
   load()
 }
 
 // ---------- 完工入库 ----------
 const receiveVisible = ref(false)
-const receiveForm = reactive({ qty: 1 })
+const receiveForm = reactive({ qty: 1, extra_cost: 0 })
 
 function openReceive() {
-  receiveForm.qty = Number(detail.value.planned_qty) - Number(receivedQty.value ?? 0) || 0
+  // v3 修复：默认值 = 计划量 − 已完工量（原恒按计划量，二次完工必超发）
+  const remain = Number(detail.value.planned_qty) - Number(receivedQty.value ?? 0)
+  receiveForm.qty = remain > 0 ? remain : 0
+  receiveForm.extra_cost = 0
   receiveVisible.value = true
 }
 
@@ -188,11 +245,55 @@ async function submitReceive() {
   }
   await request.post(`/manufacturing-orders/${detail.value.id}/receive`, {
     qty: receiveForm.qty,
+    extra_cost: receiveForm.extra_cost || 0,
   })
-  ElMessage.success('完工入库成功')
+  ElMessage.success(
+    `完工 ${fmtMoney(receiveForm.qty)} 入库，已生成待检批次（qc 录入检验 → qa 判定放行）`,
+  )
   receiveVisible.value = false
   detail.value = await request.get(`/manufacturing-orders/${detail.value.id}`)
   load()
+}
+
+// ---------- 审计留痕（/audit/records 按 MO 过滤） ----------
+const audits = ref([])
+const auditsLoading = ref(false)
+
+const ACTION_LABELS = {
+  create: '新增',
+  update: '修改',
+  status: '状态变更',
+  void: '作废',
+  close: '关闭',
+  delete: '删除',
+  inspection: '检验录入',
+  judge: '复核判定',
+  dispose: '不合格处置',
+  audit: '资质审核',
+  revoke: '资质撤销',
+  settle: '核销',
+  reverse: '冲回',
+  issue: '领料',
+  unissue: '退料',
+  receive: '收货/完工',
+  ship: '出库',
+  reject: '拒绝',
+  post: '过账',
+}
+
+async function loadAudits(moId) {
+  auditsLoading.value = true
+  try {
+    const d = await request.get('/audit/records', {
+      params: { doc_type: 'manufacturing_order', doc_id: moId, page: 1, page_size: 100 },
+      silent: true,
+    })
+    audits.value = d.items || []
+  } catch {
+    audits.value = []
+  } finally {
+    auditsLoading.value = false
+  }
 }
 
 onMounted(async () => {
@@ -233,6 +334,9 @@ onMounted(async () => {
       <el-table-column label="计划数量" align="right" width="100">
         <template #default="{ row }">{{ fmtMoney(row.planned_qty) }}</template>
       </el-table-column>
+      <el-table-column label="完工数量" align="right" width="100">
+        <template #default="{ row }">{{ fmtMoney(row.received_qty ?? row.completed_qty ?? 0) }}</template>
+      </el-table-column>
       <el-table-column label="累计领料成本" align="right" width="120">
         <template #default="{ row }">{{ fmtMoney(row.issued_qty_cost ?? row.issue_cost ?? 0) }}</template>
       </el-table-column>
@@ -272,6 +376,9 @@ onMounted(async () => {
             <el-option v-for="w in warehouses" :key="w.id" :label="w.name" :value="w.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="createForm.remark" placeholder="工单备注（可选）" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -283,6 +390,13 @@ onMounted(async () => {
     <el-drawer v-model="detailVisible" :title="detail?.doc_no || '工单详情'" size="55%">
       <div v-loading="detailLoading">
         <template v-if="detail">
+          <el-alert
+            v-if="detail.status === 'draft' && detail.reject_reason"
+            :title="`上次下达拒绝原因：${detail.reject_reason}`"
+            type="error"
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
           <el-descriptions :column="3" size="small" border>
             <el-descriptions-item label="工单号">{{ detail.doc_no }}</el-descriptions-item>
             <el-descriptions-item label="状态"><StatusTag :status="detail.status" /></el-descriptions-item>
@@ -297,21 +411,49 @@ onMounted(async () => {
             <el-button v-if="canRelease(detail.status) && actionAuth.approve.value" type="primary" size="small" @click="doAction('approve')">下达</el-button>
             <el-button v-if="canIssue(detail.status) && actionAuth.issue.value" type="success" size="small" @click="openIssue">领料</el-button>
             <el-button v-if="canReceive(detail.status) && actionAuth.receive.value" type="success" size="small" @click="openReceive">完工入库</el-button>
+            <el-button v-if="canReject(detail.status) && actionAuth.reject.value" type="warning" size="small" @click="doReject">拒绝</el-button>
             <el-button v-if="canClose(detail.status) && actionAuth.close.value" type="warning" size="small" @click="doAction('close')">关闭</el-button>
+            <el-button v-if="canVoid(detail.status) && actionAuth.void.value" type="danger" size="small" @click="doAction('void')">作废</el-button>
           </div>
 
-          <div class="section-title">领料记录</div>
-          <el-table :data="detail.issues || detail.issue_records || []" border size="small">
-            <el-table-column label="物料" min-width="160">
-              <template #default="{ row }">{{ mlabel(row.material_id) }}</template>
-            </el-table-column>
-            <el-table-column label="数量" align="right" width="110">
-              <template #default="{ row }">{{ fmtMoney(row.qty) }}</template>
-            </el-table-column>
-            <el-table-column label="成本金额" align="right" width="120">
-              <template #default="{ row }">{{ fmtMoney(row.cost_amount) }}</template>
-            </el-table-column>
-          </el-table>
+          <el-tabs>
+            <el-tab-pane label="领料记录">
+              <el-table :data="detail.issues || detail.issue_records || []" border size="small">
+                <el-table-column label="物料" min-width="160">
+                  <template #default="{ row }">{{ mlabel(row.material_id) }}</template>
+                </el-table-column>
+                <el-table-column label="数量" align="right" width="110">
+                  <template #default="{ row }">{{ fmtMoney(row.qty) }}</template>
+                </el-table-column>
+                <el-table-column label="成本金额" align="right" width="120">
+                  <template #default="{ row }">{{ fmtMoney(row.cost_amount) }}</template>
+                </el-table-column>
+                <el-table-column v-if="canIssue(detail.status) && actionAuth.unissue.value" label="操作" width="80" fixed="right">
+                  <template #default="{ row }">
+                    <el-button link type="warning" size="small" @click="openUnissue(row)">退回</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-tab-pane>
+            <el-tab-pane label="审计留痕">
+              <el-table :data="audits" border size="small" v-loading="auditsLoading">
+                <el-table-column label="时间" width="160">
+                  <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+                </el-table-column>
+                <el-table-column label="动作" width="100">
+                  <template #default="{ row }">{{ ACTION_LABELS[row.action] || row.action }}</template>
+                </el-table-column>
+                <el-table-column prop="actor" label="操作人" width="90" />
+                <el-table-column prop="role" label="角色" width="110">
+                  <template #default="{ row }">{{ row.role || '-' }}</template>
+                </el-table-column>
+                <el-table-column prop="field" label="字段" width="110" />
+                <el-table-column label="变更" min-width="160">
+                  <template #default="{ row }">{{ row.old_value ?? '-' }} → {{ row.new_value ?? '-' }}</template>
+                </el-table-column>
+              </el-table>
+            </el-tab-pane>
+          </el-tabs>
         </template>
       </div>
     </el-drawer>
@@ -366,10 +508,33 @@ onMounted(async () => {
         <el-form-item label="入库数量">
           <el-input-number v-model="receiveForm.qty" :min="0.0001" :precision="4" :controls="false" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="其他费用">
+          <el-input-number v-model="receiveForm.extra_cost" :min="0" :precision="4" :controls="false" style="width: 100%" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="receiveVisible = false">取消</el-button>
         <el-button type="primary" @click="submitReceive">确认入库</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 领料退回弹窗 -->
+    <el-dialog v-model="unissueVisible" title="领料退回" width="420px">
+      <el-form label-width="90px">
+        <el-form-item label="物料">
+          <span>{{ mlabel(unissueForm.material_id) }}</span>
+        </el-form-item>
+        <el-form-item label="退回数量">
+          <el-input-number v-model="unissueForm.qty" :min="0.0001" :precision="4" :controls="false" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="批次ID">
+          <el-input-number v-model="unissueForm.batch_id" :min="1" :precision="0" :controls="false" style="width: 100%" placeholder="批次物料必填" />
+          <div style="color:#999;font-size:12px">非批次物料可留空；批次物料请填写原领料批次ID</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="unissueVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitUnissue">确认退回</el-button>
       </template>
     </el-dialog>
   </el-card>

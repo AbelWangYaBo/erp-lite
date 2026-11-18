@@ -1,12 +1,22 @@
 <script setup>
-// 用户管理（admin：users.manage）：账号列表 + 新建账号 + 角色调整
+// 用户管理（admin：users.manage）：账号列表 + 新建账号 + 角色调整（v3 八角色，权限即时生效）
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
-import { ROLE_LABELS } from '@/constants'
 import { fmtTime } from '@/utils/format'
 
-const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }))
+// v3 八角色：后端角色变更即时生效，前端菜单在下次页面跳转时自动刷新
+const ROLE_LABELS_V3 = {
+  admin: '系统管理员',
+  purchase: '采购员',
+  sales: '销售员',
+  warehouse: '仓管员',
+  production: '生产计划员',
+  qc: '检验员',
+  qa: '质量保证员',
+  finance: '财务专员',
+}
+const ROLE_OPTIONS = Object.entries(ROLE_LABELS_V3).map(([value, label]) => ({ value, label }))
 
 const list = ref([])
 const loading = ref(false)
@@ -53,12 +63,12 @@ function onRoleChange(row) {
   const newRole = roleEditing.value[row.id]
   if (!newRole || newRole === row.role) return
   ElMessageBox.confirm(
-    `确认将用户「${row.username}」角色调整为「${ROLE_LABELS[newRole]}」？调整后该用户需重新登录生效`,
+    `确认将用户「${row.username}」角色调整为「${ROLE_LABELS_V3[newRole]}」？权限即时生效；前端菜单将在下次页面跳转时自动刷新`,
     '角色调整',
     { type: 'warning' },
   ).then(async () => {
     await request.put(`/users/${row.id}/role`, { role: newRole })
-    ElMessage.success('角色已调整')
+    ElMessage.success('角色已调整：权限即时生效，前端菜单将在下次页面跳转时自动刷新')
     row.role = newRole
   }).catch(() => {
     roleEditing.value[row.id] = row.role
@@ -71,7 +81,7 @@ onMounted(load)
 <template>
   <el-card>
     <div class="toolbar">
-      <span class="hint">角色决定可执行动作（RBAC）；调整角色后用户需重新登录刷新权限</span>
+      <span class="hint">角色决定可执行动作（RBAC）；调整角色后权限即时生效，前端菜单将在下次页面跳转时自动刷新</span>
       <span class="spacer" />
       <el-button type="primary" @click="openCreate">新建账号</el-button>
     </div>
@@ -82,7 +92,7 @@ onMounted(load)
         <template #default="{ row }">
           <el-select
             v-model="roleEditing[row.id]"
-            :placeholder="ROLE_LABELS[row.role] || row.role"
+            :placeholder="ROLE_LABELS_V3[row.role] || row.role"
             size="small"
             style="width: 150px"
             @change="onRoleChange(row)"

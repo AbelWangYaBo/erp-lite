@@ -99,8 +99,23 @@ onMounted(async () => {
           <el-table-column label="物料名称" min-width="140">
             <template #default="{ row }">{{ row.material_name }}</template>
           </el-table-column>
-          <el-table-column label="现存量" align="right" width="110">
+          <el-table-column label="现存合计" align="right" width="110">
             <template #default="{ row }">{{ fmtMoney(row.qty) }}</template>
+          </el-table-column>
+          <el-table-column label="合格" align="right" width="100">
+            <template #default="{ row }">{{ row.qualified_qty != null ? fmtMoney(row.qualified_qty) : '-' }}</template>
+          </el-table-column>
+          <el-table-column label="待检" align="right" width="110">
+            <template #default="{ row }">
+              <span v-if="row.pending_qty != null">
+                <span v-if="Number(row.pending_qty) > 0" class="pending-dot" title="存在待检批次：qc 录入检验 → qa 判定后放行" />
+                {{ fmtMoney(row.pending_qty) }}
+              </span>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="不合格" align="right" width="100">
+            <template #default="{ row }">{{ row.rejected_qty != null ? fmtMoney(row.rejected_qty) : '-' }}</template>
           </el-table-column>
           <el-table-column label="移动均价" align="right" width="120">
             <template #default="{ row }">{{ fmtMoney(row.avg_cost) }}</template>
@@ -167,5 +182,14 @@ onMounted(async () => {
   display: flex;
   gap: 10px;
   margin-bottom: 12px;
+}
+.pending-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e6a23c;
+  margin-right: 6px;
+  vertical-align: middle;
 }
 </style>

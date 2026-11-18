@@ -10,6 +10,7 @@ import { fmtTime, today } from '@/utils/format'
 const auth = useAuthStore()
 const canWrite = computed(() => auth.has('partner_cert.write'))
 const canAudit = computed(() => auth.has('partner_cert.audit'))
+const canRevoke = computed(() => auth.has('partner_cert.revoke'))
 
 const activeTab = ref('all')
 const list = ref([])
@@ -19,7 +20,9 @@ const query = reactive({ page: 1, page_size: 20, partner_id: null, audit_status:
 const partners = ref([])
 const suppliers = computed(() => partners.value.filter((p) => p.type === 'supplier'))
 const pname = (id) => partners.value.find((p) => p.id === id)?.name || id
-const statusMeta = (s) => CERT_STATUS_META[s] || { label: s, type: 'info' }
+// 常量未补 revoked 时前端兜底展示
+const statusMeta = (s) =>
+  CERT_STATUS_META[s] || (s === 'revoked' ? { label: '已撤销', type: 'info' } : { label: s, type: 'info' })
 
 async function load() {
   loading.value = true
@@ -116,9 +119,26 @@ function onAudit(row) {
     { type: 'warning' },
   ).then(async () => {
     await request.post(`/partner-certs/${row.id}/audit`)
-    ElMessage.success('审核通过')
+    ElMessage.success('审核通过：该供应商资质已生效，采购下单时可正常放行')
     load()
   }).catch(() => {})
+}
+
+// ---------- 撤销（audited → revoked） ----------
+async function onRevoke(row) {
+  const { value } = await ElMessageBox.prompt(
+    '撤销后资质立即失效，采购环节将拦截该供应商',
+    `撤销资质「${row.cert_name}（${row.cert_no}）」`,
+    {
+      type: 'warning',
+      confirmButtonText: '确认撤销',
+      inputPlaceholder: '请输入撤销原因（必填）',
+      inputValidator: (v) => (v && v.trim() ? true : '撤销原因不能为空'),
+    },
+  )
+  await request.post(`/partner-certs/${row.id}/revoke`, { reason: value.trim() })
+  ElMessage.success('资质已撤销：该供应商立即被采购资质校验拦截')
+  load()
 }
 
 function onTab(tab) {
@@ -168,10 +188,17 @@ onMounted(async () => {
               <span v-else>-</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="140" fixed="right">
+          <el-table-column label="撤销原因/撤销人" min-width="150">
+            <template #default="{ row }">
+              <span v-if="row.audit_status === 'revoked'">{{ row.revoke_reason || '-' }}<br />{{ row.revoked_by || '-' }}</span>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <el-button v-if="canWrite && row.audit_status === 'draft'" link type="primary" @click="openDialog(row)">编辑</el-button>
               <el-button v-if="canAudit && row.audit_status === 'draft'" link type="success" @click="onAudit(row)">审核</el-button>
+              <el-button v-if="canRevoke && row.audit_status === 'audited'" link type="danger" @click="onRevoke(row)">撤销</el-button>
             </template>
           </el-table-column>
         </el-table>
