@@ -1,7 +1,7 @@
 # erp-lite
 
-> 在线页面（GitHub Pages，仅前端静态壳，后端 API 不可用、无法登录；完整体验见下方本地开发）：
-> **https://abelwangyabo.github.io/erp-lite/**
+> 项目介绍页（GitHub Pages 静态页：定位 / 闭环链路 / 权限矩阵 / 本地运行指引；ERP 业务界面依赖后端，不在线上运行）：
+> **https://abelwangyabo.github.io/erp-lite/**（页面源码在 `pages/`，由 `.github/workflows/pages.yml` 自动部署）
 
 小型进销存 + MRP 一体化 ERP（Vue3 + FastAPI + PostgreSQL）。
 
