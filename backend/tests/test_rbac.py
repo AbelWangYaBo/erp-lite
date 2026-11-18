@@ -16,7 +16,8 @@ from erp_lite.models import Material, MaterialCategory, Partner, PartnerType, Us
 from erp_lite.services.rbac import ROLE_ACTIONS, actions_for
 from erp_lite.services.security import hash_password
 
-ROLES = ["admin", "purchase", "warehouse", "production", "qa"]
+# v3：八角色（qc/finance 新增）
+ROLES = ["admin", "purchase", "sales", "warehouse", "production", "qc", "qa", "finance"]
 
 
 # ---------- 测试基建 ----------
@@ -76,36 +77,76 @@ def test_admin_has_all_actions():
 
 def test_purchase_matrix():
     acts = actions_for("purchase")
-    for a in ("po.create", "po.approve", "so.create", "so.approve",
-              "partner_cert.write", "audit.read"):
+    # v3：so.create/so.approve 移入 sales 角色，purchase 不再持有
+    for a in ("po.create", "po.approve", "po.reject", "po.close",
+              "partner_cert.write", "ap.read", "audit.read"):
         assert a in acts, a
-    for a in ("po.receive", "so.ship", "mo.create", "inspect.judge",
-              "users.manage", "settlement.create", "master.write"):
+    for a in ("po.receive", "so.create", "so.approve", "so.ship", "mo.create",
+              "batch.inspect", "batch.judge", "users.manage",
+              "settlement.create", "master.write"):
+        assert a not in acts, a
+
+
+def test_sales_matrix():
+    """v3 新增 sales 角色：SO 全生命周期 + ar.read。"""
+    acts = actions_for("sales")
+    for a in ("so.create", "so.update", "so.approve", "so.reject", "so.void",
+              "so.close", "sales_return.create", "ar.read", "audit.read"):
+        assert a in acts, a
+    for a in ("po.create", "po.approve", "so.ship", "mo.create", "batch.judge",
+              "users.manage", "master.write"):
         assert a not in acts, a
 
 
 def test_warehouse_matrix():
     acts = actions_for("warehouse")
-    for a in ("po.receive", "so.ship", "audit.read"):
+    # v3：warehouse 新增 stockcount.create（建单/录实盘，post 归 finance）
+    for a in ("po.receive", "so.ship", "stockcount.create", "audit.read"):
         assert a in acts, a
-    for a in ("po.create", "po.approve", "so.create", "bom.write", "mo.issue", "master.write"):
+    for a in ("po.create", "po.approve", "so.create", "bom.write", "mo.issue",
+              "stockcount.post", "master.write"):
         assert a not in acts, a
 
 
 def test_production_matrix():
     acts = actions_for("production")
-    for a in ("mo.create", "mo.release", "mo.issue", "mo.receive",
-              "bom.write", "mrp.run", "audit.read"):
+    # v3：production 新增 mo.reject/mo.void/mo.unissue
+    for a in ("mo.create", "mo.release", "mo.reject", "mo.void", "mo.unissue",
+              "mo.issue", "mo.receive", "mo.close",
+              "bom.write", "mrp.run", "mrp.convert", "audit.read"):
         assert a in acts, a
-    for a in ("po.create", "po.receive", "so.ship", "inspect.judge", "users.manage"):
+    for a in ("po.create", "po.receive", "so.ship", "batch.inspect",
+              "batch.judge", "batch.dispose", "users.manage"):
+        assert a not in acts, a
+
+
+def test_qc_matrix():
+    """v3 双段制：qc 只做检验录入（batch.inspect），判定归 qa。"""
+    acts = actions_for("qc")
+    for a in ("batch.inspect", "batch.trace", "audit.read"):
+        assert a in acts, a
+    for a in ("batch.judge", "batch.dispose", "po.create", "mo.create", "users.manage"):
         assert a not in acts, a
 
 
 def test_qa_matrix():
     acts = actions_for("qa")
-    for a in ("inspect.judge", "batch.dispose", "partner_cert.audit", "audit.read"):
+    # v3：inspect.judge 拆为 batch.judge；qa 另有资质审核/撤销与退货生成
+    for a in ("batch.judge", "batch.dispose", "purchase_return.create",
+              "partner_cert.audit", "partner_cert.revoke", "audit.read"):
         assert a in acts, a
-    for a in ("po.create", "po.receive", "so.ship", "mo.create", "master.write", "users.manage"):
+    for a in ("po.create", "po.receive", "so.ship", "mo.create",
+              "batch.inspect", "master.write", "users.manage"):
+        assert a not in acts, a
+
+
+def test_finance_matrix():
+    """v3 新增 finance 角色：应付应收/对账/核销冲回/盘点过账。"""
+    acts = actions_for("finance")
+    for a in ("ap.read", "ar.read", "settlement.create", "settlement.reverse",
+              "statement.read", "stockcount.post", "audit.read"):
+        assert a in acts, a
+    for a in ("po.create", "so.create", "mo.create", "batch.judge", "users.manage"):
         assert a not in acts, a
 
 
@@ -162,11 +203,11 @@ def test_purchase_receive_po_403(db_session, make_role_client):
 
 
 def test_production_inspect_judge_forbidden(make_role_client):
-    """inspect.judge 仅 qa/admin（检验路由 S2 落地，此处锁权限表行为）。"""
+    """v3 双段制：batch.judge 仅 qa/admin，production 403（此处锁权限表行为）。"""
     c = make_role_client("production")
-    dep = require_action("inspect.judge")
+    dep = require_action("batch.judge")
     with pytest.raises(Exception) as exc:
-        dep(fake := SimpleNamespace(id=1, username="tester", role="production"))
+        dep(SimpleNamespace(id=1, username="tester", role="production"))
     assert getattr(exc.value, "status_code", None) == 403
 
 
@@ -236,10 +277,11 @@ def test_purchase_create_po_200(db_session, make_role_client):
 
 
 def test_purchase_approve_then_warehouse_receive_200(db_session, make_role_client):
-    """purchase 建+审 → warehouse 入库：矩阵关键链路放行。"""
-    purchase = make_role_client("purchase")
+    """purchase 建单 → 另一 purchase 账号审核（v3 不得自审）→ warehouse 入库：矩阵关键链路放行。"""
+    purchase = make_role_client("purchase", username="buyer")
     po = purchase.post("/api/v1/purchase-orders", json=_po_payload(db_session)).json()
-    resp = purchase.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    approver = make_role_client("purchase", username="purchase_lead")  # v3：不得自审，审核换人
+    resp = approver.post(f"/api/v1/purchase-orders/{po['id']}/approve")
     assert resp.status_code == 200, resp.text
     wh = make_role_client("warehouse")
     resp = wh.post(

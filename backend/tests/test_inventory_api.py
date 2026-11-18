@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.models import (
     InventoryMove,
     Material,
@@ -49,7 +49,11 @@ def _order(client, kind, partner_id, mat, wh, qty, price, date="2026-11-17"):
 
 def _act(client, kind, doc_id, action, body=None):
     prefix = "purchase-orders" if kind == "po" else "sales-orders"
+    if action == "approve":
+        switch_user(client, "approver")  # v3：不得自审，审核换 approver
     resp = client.post(f"/api/v1/{prefix}/{doc_id}/{action}", json=body)
+    if action == "approve":
+        switch_user(client, "tester")  # 切回创建人身份
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -122,9 +126,16 @@ def test_moves_endpoint_filters_and_desc_order(client, db_session):
     ).json()
     assert other_wh_move["total"] == 0
 
+    # 日期过滤用动态区间（流水 moved_at 含当日时刻，写死「今天」会在日期边界漏掉全部流水）
+    from datetime import date as _date, timedelta as _timedelta
+
     filtered = client.get(
         "/api/v1/inventory/moves",
-        params={"material_id": mat.id, "from": "2026-11-17", "to": "2026-11-18"},
+        params={
+            "material_id": mat.id,
+            "from": _date.today().isoformat(),
+            "to": (_date.today() + _timedelta(days=1)).isoformat(),
+        },
     ).json()
     assert filtered["total"] == 3
 

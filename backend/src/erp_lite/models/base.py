@@ -39,6 +39,9 @@ class MoveType(str, enum.Enum):
     mo_issue = "mo_issue"
     mo_receipt = "mo_receipt"
     adjust = "adjust"
+    purchase_return = "purchase_return"  # v3：采购退货出库（负数，红字）
+    sale_return = "sale_return"  # v3：销售退货入库（正数，待重检）
+    mo_issue_return = "mo_issue_return"  # v3：领料退回入库（正数，红字领料）
 
 
 class SettleStatus(str, enum.Enum):
@@ -57,10 +60,11 @@ class InspStatus(str, enum.Enum):
 
 
 class CertStatus(str, enum.Enum):
-    """供应商资质审核状态（V2-S4：录入为 draft，QA 审核后 audited 才生效）。"""
+    """供应商资质审核状态（v3：audited 可撤销为 revoked，撤销后不再参与 PO 拦截判定）。"""
 
     draft = "draft"
     audited = "audited"
+    revoked = "revoked"
 
 
 class TimestampMixin:

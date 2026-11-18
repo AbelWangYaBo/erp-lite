@@ -15,8 +15,10 @@ class AuditRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     doc_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     doc_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    action: Mapped[str] = mapped_column(String(16), nullable=False)  # create/update/status/void/close
+    action: Mapped[str] = mapped_column(String(16), nullable=False)  # 见 services/audit.py ACTION 枚举
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(16), default=None)  # v3：留痕当时角色
+    doc_no: Mapped[str | None] = mapped_column(String(32), default=None)  # v3：单据号直查
     field: Mapped[str | None] = mapped_column(String(64), default=None)
     old_value: Mapped[str | None] = mapped_column(String(255), default=None)
     new_value: Mapped[str | None] = mapped_column(String(255), default=None)
@@ -32,6 +34,9 @@ class OperationLog(Base):
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     detail: Mapped[str | None] = mapped_column(String(255), default=None)
+    # v3：关联单据（可空，登录/MRP 运算等全局动作无单据）
+    doc_type: Mapped[str | None] = mapped_column(String(32), default=None)
+    doc_id: Mapped[int | None] = mapped_column(Integer, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

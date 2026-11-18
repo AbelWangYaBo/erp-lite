@@ -136,6 +136,7 @@ def main() -> None:
                     file_ref=f"/data/certs/{cert_no}.pdf",
                     audit_status=status,
                     audited_by="qa",
+                    created_by="purchase",
                     audited_at=None,
                 )
             )
@@ -163,14 +164,17 @@ def main() -> None:
         ensure_bom(semi, [(raw.id, 2)])
         ensure_bom(fg, [(semi.id, 1)])
 
-        # v2 演示五账号：账号名即角色名，逐个按 username 判存在（幂等）。
-        # 密码错开避免同密风险；改角色后需重新登录以刷新 JWT 里的 role claim。
+        # v3 演示八账号：账号名即角色名，逐个按 username 判存在（幂等）。
+        # 密码错开避免同密风险；v2 的 qa 账号在 v3 承担复核判定，qc 负责检验录入。
         demo_accounts = [
             ("admin", "admin123"),
             ("purchase", "p123"),
+            ("sales", "s123"),
             ("warehouse", "w123"),
             ("production", "p123456"),
+            ("qc", "qc123"),
             ("qa", "q123"),
+            ("finance", "f123"),
         ]
         for username, password in demo_accounts:
             if db.scalar(select(User).where(User.username == username)) is not None:

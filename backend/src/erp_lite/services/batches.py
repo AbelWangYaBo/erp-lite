@@ -15,7 +15,7 @@
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from erp_lite.models import (
@@ -26,7 +26,7 @@ from erp_lite.models import (
     ManufacturingOrder,
     MoveType,
 )
-from erp_lite.services.inventory import get_stock, q4
+from erp_lite.services.inventory import get_stock, post_move, q4
 
 
 def get_or_create_batch(
@@ -40,25 +40,16 @@ def get_or_create_batch(
     insp_status: InspStatus = InspStatus.pending,
     created_by: str | None = None,
 ) -> tuple[Batch, bool]:
-    """按批次号取批次；不存在则创建，存在则复用（校验同物料 + 待检状态）。
+    """按批次号取批次；不存在则创建。v3：批次号全表唯一且**不复用**——
 
-    返回 (批次, 是否新建)。复用时保留原来源/供应商/检验状态；
-    仅当已存在批次 insp_status=pending 时允许复用（追加数量仍待检）——
-    qualified/rejected/closed 批次号再入库一律 ValueError（路由层转 400），
-    防止新增量借旧批次号免检放行或永久滞留。
+    已存在的批次号再入库一律 ValueError（路由层转 400，提示换号），
+    防止第二张 PO 的收货/应付挂到第一张 PO 的批次来源上（来源失真）。
     """
     batch = db.scalar(select(Batch).where(Batch.batch_no == batch_no))
     if batch is not None:
-        if batch.material_id != material_id:
-            raise ValueError(
-                f"批次号 {batch_no} 已属于物料 {batch.material_id}，"
-                f"不能用于物料 {material_id}"
-            )
-        if batch.insp_status != InspStatus.pending:
-            raise ValueError(
-                f"批次号已存在且已完成检验判定，请使用新批次号（{batch_no}）"
-            )
-        return batch, False
+        raise ValueError(
+            f"批次号 {batch_no} 已存在（批次 #{batch.id}），批次号不复用，请使用新批次号"
+        )
     batch = Batch(
         batch_no=batch_no,
         material_id=material_id,
@@ -118,7 +109,7 @@ def get_available(
     return total
 
 
-# ---------- S3：放行拦截 / 检验判定 / 不合格处置 ----------
+# ---------- S3：放行拦截 / v3 双段检验（qc 录入 → qa 判定）/ 不合格处置 ----------
 
 
 def ensure_batch_usable(batch: Batch) -> None:
@@ -131,7 +122,7 @@ def ensure_batch_usable(batch: Batch) -> None:
         return
     if batch.insp_status == InspStatus.pending:
         raise ValueError(
-            f"批次 {batch.batch_no} 待检验，QA 放行后方可领料/出库"
+            f"批次 {batch.batch_no} 待检验（qc 录入 → qa 放行），放行后方可领料/出库"
         )
     if batch.insp_status == InspStatus.rejected:
         raise ValueError(
@@ -140,41 +131,124 @@ def ensure_batch_usable(batch: Batch) -> None:
     raise ValueError(f"批次 {batch.batch_no} 已关闭，禁止领料/出库")
 
 
-def inspect_batch(
+def record_inspection(
     db: Session,
     batch: Batch,
     *,
     items: list[dict],
-    conclusion: str,
-    inspector: str | None = None,
+    suggest_conclusion: str,
+    recorder: str | None = None,
     remark: str | None = None,
 ) -> InspectionRecord:
-    """录入检验记录并判定：pass → qualified，fail → rejected；closed 批次拒绝。
+    """qc 段：录入检项结果与建议结论；批次保持 pending，等待 qa 复核判定。
 
-    一次判定一条记录（历史保留，支持复判），由调用方写审计/日志并提交。
+    同一批次存在未判定记录时拒绝重复录入（先让 qa 判定）；closed 批次拒绝。
+    判定（judge_batch）由 qa 在同一条记录上完成，judge≠recorder 由路由层校验。
     """
     if batch.insp_status == InspStatus.closed:
-        raise ValueError(f"批次 {batch.batch_no} 已关闭，不可再检验判定")
+        raise ValueError(f"批次 {batch.batch_no} 已关闭，不可再检验")
+    pending_rec = db.scalar(
+        select(InspectionRecord)
+        .where(
+            InspectionRecord.batch_id == batch.id,
+            InspectionRecord.conclusion.is_(None),
+        )
+        .order_by(InspectionRecord.id.desc())
+    )
+    if pending_rec is not None:
+        raise ValueError(
+            f"批次 {batch.batch_no} 已有待判定检验记录（录入人 {pending_rec.recorder}），"
+            f"请先由 qa 完成复核判定"
+        )
     record = InspectionRecord(
         batch_id=batch.id,
         items_json=items,
-        conclusion=conclusion,
-        inspector=inspector,
+        suggest_conclusion=suggest_conclusion,
+        recorder=recorder,
         remark=remark,
     )
     db.add(record)
+    db.flush()
+    return record
+
+
+def judge_batch(
+    db: Session, batch: Batch, *, conclusion: str, judge_by: str
+) -> InspectionRecord:
+    """qa 段：复核判定最近一条未判定记录；pass → qualified / fail → rejected。
+
+    无未判定记录时 400（须先由 qc 录入）；自审拦截（judge≠recorder）由路由层
+    ensure_not_self 校验。历史记录保留，支持复判（复判走新的录入-判定循环）。
+    """
+    if batch.insp_status == InspStatus.closed:
+        raise ValueError(f"批次 {batch.batch_no} 已关闭，不可再判定")
+    record = db.scalar(
+        select(InspectionRecord)
+        .where(
+            InspectionRecord.batch_id == batch.id,
+            InspectionRecord.conclusion.is_(None),
+        )
+        .order_by(InspectionRecord.id.desc())
+    )
+    if record is None:
+        raise ValueError(
+            f"批次 {batch.batch_no} 暂无待判定检验记录，请先由 qc 录入检验记录"
+        )
+    record.conclusion = conclusion
+    record.judge_by = judge_by
     batch.insp_status = (
         InspStatus.qualified if conclusion == "pass" else InspStatus.rejected
     )
     return record
 
 
-def dispose_batch(
-    db: Session, batch: Batch, *, disposition: str, remark: str | None = None
-) -> Batch:
-    """不合格批次处置（return 退货 / destroy 销毁）→ insp_status=closed 留痕。
+def scrap_batch(db: Session, batch: Batch, *, actor: str | None = None) -> Decimal:
+    """报废清库存（v3 处置闭环 destroy 分支）：按批次现存逐仓写负向 adjust 流水，
+    loss_amount = 冲减的批次现存金额。返回损失金额。
 
-    仅 rejected 批次可处置；closed 不可重复处置，pending/qualified 拒绝。
+    成品复判不合格与原料报废共用：库存价值不再残留（修 v2 断头路）；
+    已结转的生产成本不回冲（MO transferred_cost 不动），损失在批次上留痕。
+    """
+    rows = (
+        db.execute(
+            select(
+                InventoryMove.warehouse_id,
+                func.coalesce(func.sum(InventoryMove.qty), 0),
+                func.coalesce(func.sum(InventoryMove.amount), 0),
+            )
+            .where(InventoryMove.batch_id == batch.id)
+            .group_by(InventoryMove.warehouse_id)
+        )
+        .all()
+    )
+    loss = Decimal("0")
+    for warehouse_id, qty, amount in rows:
+        qty_d, amount_d = q4(qty), q4(amount)
+        if qty_d <= 0:
+            continue
+        post_move(
+            db,
+            material_id=batch.material_id,
+            warehouse_id=warehouse_id,
+            move_type=MoveType.adjust,
+            qty=-qty_d,
+            unit_cost=q4(amount_d / qty_d),
+            source_type="batch_dispose",
+            source_id=batch.id,
+            batch_id=batch.id,
+        )
+        loss = q4(loss + amount_d)
+    batch.loss_amount = q4(batch.loss_amount + loss)
+    return loss
+
+
+def dispose_close(
+    batch: Batch, *, disposition: str, remark: str | None = None
+) -> None:
+    """处置状态收尾：写 disposition 并置 closed（账务联动由调用方完成后调用）。
+
+    仅 rejected 批次可处置（v2 口径保留）：pending/qualified 未判不合格、
+    closed 已处置，一律 ValueError（路由层转 400）。
     """
     if batch.insp_status != InspStatus.rejected:
         raise ValueError(
@@ -184,7 +258,6 @@ def dispose_batch(
     batch.disposition = disposition
     batch.disposition_remark = remark
     batch.insp_status = InspStatus.closed
-    return batch
 
 
 # ---------- S3：批次正反向追溯 ----------

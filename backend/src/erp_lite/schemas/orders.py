@@ -63,6 +63,7 @@ class PurchaseOrderOut(BaseModel):
     order_date: date
     expected_date: date | None
     remark: str | None
+    reject_reason: str | None = None
     created_by: str | None
     lines: list[PurchaseOrderLineOut]
 
@@ -73,6 +74,8 @@ class AuditOut(BaseModel):
     id: int
     action: str
     actor: str
+    role: str | None = None
+    doc_no: str | None = None
     field: str | None
     old_value: str | None
     new_value: str | None
@@ -83,6 +86,12 @@ class AuditOut(BaseModel):
 
 class PurchaseOrderDetail(PurchaseOrderOut):
     audits: list[AuditOut] = []
+
+
+class RejectIn(BaseModel):
+    """审批拒绝原因（PO/SO/MO 通用，v3 规则 A 配套）。"""
+
+    reason: str = Field(min_length=1, max_length=255)
 
 
 # ---------- 销售订单 ----------
@@ -109,6 +118,7 @@ class SalesOrderOut(BaseModel):
     partner_id: int
     order_date: date
     remark: str | None
+    reject_reason: str | None = None
     created_by: str | None
     lines: list[SalesOrderLineOut]
 
@@ -142,6 +152,10 @@ class StockOut(BaseModel):
     qty: Decimal
     avg_cost: Decimal | None
     amount: Decimal
+    # v3 三口径（批次物料）：合格可发 / 待检 / 不合格；非批次物料三者同 qty
+    qualified_qty: Decimal | None = None
+    pending_qty: Decimal | None = None
+    rejected_qty: Decimal | None = None
 
 
 class MoveOut(BaseModel):
@@ -155,6 +169,8 @@ class MoveOut(BaseModel):
     source_type: str
     source_id: int
     source_line_id: int | None
+    batch_id: int | None = None
+    batch_no: str | None = None  # v3：流水展示批号
     moved_at: datetime
 
     model_config = {"from_attributes": True}

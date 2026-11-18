@@ -72,5 +72,10 @@ class PartnerCert(Base):
     )
     audited_by: Mapped[str | None] = mapped_column(String(64), default=None)
     audited_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    # v3：录入人（不得自审依据）+ 撤销（audited → revoked）
+    created_by: Mapped[str | None] = mapped_column(String(64), default=None)
+    revoke_reason: Mapped[str | None] = mapped_column(String(255), default=None)
+    revoked_by: Mapped[str | None] = mapped_column(String(64), default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     partner = relationship("Partner")

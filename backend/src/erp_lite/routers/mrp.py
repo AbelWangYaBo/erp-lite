@@ -28,6 +28,7 @@ from erp_lite.schemas.production import (
     MrpSuggestionPage,
 )
 from erp_lite.services.audit import write_audit, write_op_log
+from erp_lite.services.certs import ensure_supplier_certified
 from erp_lite.services.inventory import _d
 from erp_lite.services.mrp import run_mrp
 from erp_lite.services.numbering import next_doc_no
@@ -159,6 +160,8 @@ def convert_suggestions(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"供应商不存在或类型错误：{payload.partner_id}",
             )
+        # v3：堵资质拦截旁路——MRP 转 PO 与手工建单同一资质校验
+        ensure_supplier_certified(db, supplier.id, current_user.username)
 
     today = date.today()
     converted: list[dict] = []
@@ -182,14 +185,20 @@ def convert_suggestions(
                     po_id=po.id,
                     material_id=sug.material_id,
                     qty=sug.net_qty,
-                    unit_price=_d(0),
+                    unit_price=_d(0),  # 0 价草稿：审核/入库前应改价（0 价入库会生成 0 应付）
                     warehouse_id=wh_id,
                 )
             )
             sug.converted = True
             sug.converted_doc_id = po.id
             converted.append({"suggestion_id": sug.id, "doc_type": "purchase_order", "doc_id": po.id})
-        write_audit(db, "purchase_order", po.id, "create", current_user.username)
+        write_audit(db, "purchase_order", po.id, "create", current_user.username,
+                    role=current_user.role, doc_no=po.doc_no)
+        write_op_log(
+            db, current_user.username, "mrp_convert_warning",
+            f"MRP 转采购 {po.doc_no} 行单价为 0，请在审核前修改行单价",
+            doc_type="purchase_order", doc_id=po.id,
+        )
         db.flush()
 
     for sug in make_sugs:
@@ -207,7 +216,8 @@ def convert_suggestions(
         db.flush()
         sug.converted = True
         sug.converted_doc_id = mo.id
-        write_audit(db, "manufacturing_order", mo.id, "create", current_user.username)
+        write_audit(db, "manufacturing_order", mo.id, "create", current_user.username,
+                    role=current_user.role, doc_no=mo.doc_no)
         converted.append({"suggestion_id": sug.id, "doc_type": "manufacturing_order", "doc_id": mo.id})
 
     write_op_log(

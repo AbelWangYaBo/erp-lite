@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.models import (
     Material,
     MaterialCategory,
@@ -63,7 +63,9 @@ def _purchase_in(client, db_session, partner_id, qty=100, price=10):
     )
     assert resp.status_code == 200, resp.text
     po = resp.json()
+    switch_user(client, "approver")
     assert client.post(f"/api/v1/purchase-orders/{po['id']}/approve").status_code == 200
+    switch_user(client, "tester")  # v3：不得自审，PO 审核换 approver 后切回
     resp = client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
         json=[{"line_id": po["lines"][0]["id"], "qty": qty, "warehouse_id": wh.id}],
@@ -94,7 +96,9 @@ def _sale_out(client, db_session, partner_id, qty=20, price=25):
     )
     assert resp.status_code == 200, resp.text
     so = resp.json()
+    switch_user(client, "approver")
     assert client.post(f"/api/v1/sales-orders/{so['id']}/approve").status_code == 200
+    switch_user(client, "tester")  # v3：不得自审，SO 审核换 approver 后切回
     resp = client.post(
         f"/api/v1/sales-orders/{so['id']}/ship",
         json=[{"line_id": so["lines"][0]["id"], "qty": qty, "warehouse_id": wh.id}],

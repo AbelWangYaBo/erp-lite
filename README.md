@@ -23,10 +23,10 @@ uv run alembic upgrade head
 uv run python ../scripts/seed.py
 uv run uvicorn erp_lite.main:app --reload --port 8100
 
-# 前端（dev 代理 /api -> VITE_API_TARGET，默认 http://localhost:8000）
+# 前端（dev 代理 /api -> VITE_API_TARGET，默认 http://localhost:8100）
 cd web
 npm install
-VITE_API_TARGET=http://localhost:8100 npm run dev
+npm run dev
 # 访问 http://localhost:15173（5173 留给字典应用，strictPort 被占时启动报错不会漂移）
 ```
 
@@ -48,25 +48,30 @@ docker compose ps        # 三服务 Up/healthy
   docker compose up -d
   ```
 
-- **v2 演示五账号**（seed 脚本创建，账号名即角色名，密码错开避免同密风险）：
+- **v3 演示八账号**（seed 脚本创建，账号名即角色名，密码错开避免同密风险）：
 
   | 账号 | 密码 | 角色 |
   |---|---|---|
-  | admin | admin123 | admin（全量） |
-  | purchase | p123 | purchase（PO/SO 建审、资质录入） |
-  | warehouse | w123 | warehouse（PO 入库、SO 出库） |
-  | production | p123456 | production（BOM/MRP/MO） |
-  | qa | q123 | qa（检验判定、资质审核） |
+  | admin | admin123 | admin（全量兜底审核） |
+  | purchase | p123 | purchase（PO 建/审、资质录入） |
+  | sales | s123 | sales（SO 建/审、销售退货） |
+  | warehouse | w123 | warehouse（收货/出库/建盘点） |
+  | production | p123456 | production（BOM/MRP/MO/领退料） |
+  | qc | qc123 | qc（检验记录录入） |
+  | qa | q123 | qa（复核判定、处置、资质审核/撤销） |
+  | finance | f123 | finance（核销/冲回/对账/盘点过账） |
 
   注意：角色变更**即时生效**（鉴权以数据库中的当前角色为准，JWT 中的 role claim
-  仅作留痕，无需重新登录）。
+  仅作留痕，无需重新登录；前端菜单在下次页面跳转时自动刷新）。
+  **审核类动作一律不得自审**（操作人 ≠ 单据创建/录入人，admin 无豁免）——
+  这是 v3 的职责分离硬约束：purchase 建的 PO 由 admin（或另一采购员）审核。
 
 ## 种子脚本（幂等）
 
 2 仓库（MAIN 原料仓 / FG 成品仓）、3 批次物料（RAW-SCREW-M3X8 螺丝 M3×8、
 SEMI-BRACKET 支架半成品、FG-BRACKET 支架成品，均 `batch_required=true`，成品带
 UDI-DI）、两层 BOM（FG→1×SEMI→2×RAW）、1 客户（CUS-001）、3 供应商（SUP-001 资质
-有效 / SUP-002 临期 +10 天 / SUP-003 已过期，各挂一张 audited 证照）、演示五账号
+有效 / SUP-002 临期 +10 天 / SUP-003 已过期，各挂一张 audited 证照）、演示八账号
 （见上表）。按 code/cert_no 判存在，重复执行不报错、不重复插入。
 
 ```bash
@@ -97,24 +102,30 @@ cd backend && uv run python ../scripts/smoke.py   # 需先 docker compose up 且
 cd backend && SMOKE_BASE=http://localhost:8100 uv run python ../scripts/smoke.py
 ```
 
-## v2 演示链路（GMP 场景，五角色接力）
+## v3 演示链路（八角色接力，全链路闭环）
 
-seed 后即可用五账号手工走通（或直接跑 `smoke_v2.py` 全自动验证）。按 PRD-v2 §2.5
-权限矩阵，一句话流程：
+seed 后即可用八账号手工走通（或直接跑 `smoke_v3.py` 全自动验证）。设计见
+docs/DESIGN-v3.md，一句话流程：
 
-> **purchase** 向 SUP-001 下 PO 并审核 → **warehouse** 分批入库（批次 LOT-xxx，入库即
-> `pending` 待检）→ **qa** 在批次台账判定 pass（`qualified` 放行）→ **production** MRP
-> 运算（只计合格批次）→ make 建议转 MO → 下达 → 按合格批次领料 → 完工入库（成品批次
-> 自动生成且合格）→ **purchase** 建 SO 并审核 → **warehouse** 选合格成品批次出库
-> （UDI-DI + PI=批号）→ **admin** 核销收付款、对账、查审计留痕。
+> 登录后各角色在**工作台**（首页）看到自己的待办 → **purchase** 向 SUP-001 下 PO →
+> **admin** 审核（不得自审）→ **warehouse** 收货（批次 `pending`，待检量在库存页独立
+> 展示）→ **qc** 录入检验记录 → **qa** 复核放行（`qualified`）/ 判不合格 → **qa**
+> 处置：退货=生成采购退货单+冲应付+冲已收量；报废=清库存+记损失 → **production** MRP
+> → make 转单 → admin 下达 → 按合格批次领料（可退回）→ 完工入库（成品批次 `pending`，
+> 同走 qc/qa 放行）→ **sales** 建 SO → admin 审核 → **warehouse** 出库（退货走销售
+> 退货单：批次回待检重检+冲应收）→ **finance** 核销（可冲回）、对账（期初+新增−核销=
+> 期末）、盘点过账 → 全程单据可点击互跳、审计带角色可过滤。
 
 合规控制点随手可验：
 
-- 越权 403：warehouse 建 PO、production 判检验、purchase 入库、qa 建单均被拒；
-- 资质拦截 400：向 SUP-003（过期）下单在创建与审核两处都被拦，SUP-002（临期）进预警列表；
-- 放行拦截 400：pending / rejected 批次不能领料、不能出库，可用量只计 qualified；
-- 正反向追溯：成品批次正查逐层展开到 SEMI/RAW 批次并带供应商；原料批次反查召回
-  所有下游成品批次（全程带单据链接）。
+- 越权 403：warehouse 建 PO、qc 复核判定、qa 检验录入、finance 建 PO 均被拒；
+- 自审拦截 400：purchase 自审 PO、qc 自判检验、qa 撤自己审的资质均被拒（规则 A）；
+- 资质拦截 400：SUP-003（过期）下单被拦，MRP 转单同样被拦（旁路已堵），
+  撤销（revoked）资质立即失效，SUP-002（临期）进预警列表；
+- 放行拦截 400：pending/rejected 批次不能领料、不能出库；库存三口径（合格/待检/
+  不合格）让"看到有货发不出"有解释；
+- 处置/退货/报废/盘点全部产生真实账务联动（冲应付/冲应收/调整流水），无"打标签式"闭环；
+- 正反向追溯全程带单据链接；审计带角色与单据号，可按人/时间过滤。
 
 ```bash
 # smoke_v2 默认打 http://localhost:8100（本地开发后端）

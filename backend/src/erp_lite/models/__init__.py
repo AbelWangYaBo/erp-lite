@@ -15,9 +15,9 @@ from erp_lite.models.base import (
 from erp_lite.models.users import Role, User
 from erp_lite.models.master_data import Material, Partner, PartnerCert, Warehouse
 from erp_lite.models.batch import Batch, InspectionRecord
-from erp_lite.models.purchase import PurchaseOrder, PurchaseOrderLine
-from erp_lite.models.sales import SalesOrder, SalesOrderLine
-from erp_lite.models.inventory import InventoryMove
+from erp_lite.models.purchase import PurchaseOrder, PurchaseOrderLine, PurchaseReturn
+from erp_lite.models.sales import SalesOrder, SalesOrderLine, SalesReturn
+from erp_lite.models.inventory import InventoryMove, StockCount, StockCountLine
 from erp_lite.models.production import (
     Bom,
     BomLine,
@@ -50,9 +50,13 @@ __all__ = [
     "InspectionRecord",
     "PurchaseOrder",
     "PurchaseOrderLine",
+    "PurchaseReturn",
     "SalesOrder",
     "SalesOrderLine",
+    "SalesReturn",
     "InventoryMove",
+    "StockCount",
+    "StockCountLine",
     "Bom",
     "BomLine",
     "MrpRun",

@@ -13,6 +13,7 @@ from erp_lite.models import (
     MaterialCategory,
     Warehouse,
 )
+from conftest import switch_user
 from erp_lite.services.inventory import get_stock, post_move
 
 
@@ -49,8 +50,10 @@ def _create_mo(client, db_session, planned=10):
 
 
 def _approve_mo(client, mo_id):
+    switch_user(client, "approver")  # v3：不得自审，MO 下达换 approver
     resp = client.post(f"/api/v1/manufacturing-orders/{mo_id}/approve")
     assert resp.status_code == 200, resp.text
+    switch_user(client, "tester")  # 切回创建人身份
 
 
 def test_create_mo_draft_and_approve(client, db_session):
@@ -118,7 +121,7 @@ def test_issue_with_explicit_lines(client, db_session):
     )
     assert resp.status_code == 200, resp.text
     mo_id = resp.json()["id"]
-    client.post(f"/api/v1/manufacturing-orders/{mo_id}/approve")
+    _approve_mo(client, mo_id)  # v3：不得自审，MO 下达换 approver
     resp = client.post(
         f"/api/v1/manufacturing-orders/{mo_id}/issue",
         json={"lines": [{"material_id": raw.id, "qty": 5}]},

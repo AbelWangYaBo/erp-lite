@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.models import (
     InventoryMove,
     Material,
@@ -41,11 +41,20 @@ def _stock_up(client, db_session, mat, wh, sup, qty=100, price=10):
         },
     )
     po = resp.json()
+    switch_user(client, "approver")
     client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，审核换 approver 后切回
     client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
         json=[{"line_id": po["lines"][0]["id"], "qty": qty, "warehouse_id": wh.id}],
     )
+
+
+def _approve_so(client, so_id):
+    switch_user(client, "approver")  # v3：不得自审，SO 审核换 approver
+    resp = client.post(f"/api/v1/sales-orders/{so_id}/approve")
+    switch_user(client, "tester")
+    return resp
 
 
 def _create_so(client, db_session, qty=30, price=15):
@@ -91,7 +100,7 @@ def test_po_so_numbering_independent(client, db_session):
 def test_approve_ship_full_stock_and_receivable(client, db_session):
     body, wh, mat, sup, _ = _create_so(client, db_session, qty=30, price=15)
     _stock_up(client, db_session, mat, wh, sup, qty=100, price=10)
-    resp = client.post(f"/api/v1/sales-orders/{body['id']}/approve")
+    resp = _approve_so(client, body["id"])
     assert resp.status_code == 200
     line_id = body["lines"][0]["id"]
     resp = client.post(
@@ -124,7 +133,7 @@ def test_approve_ship_full_stock_and_receivable(client, db_session):
 def test_ship_insufficient_stock_400(client, db_session):
     body, wh, mat, sup, _ = _create_so(client, db_session, qty=30, price=15)
     _stock_up(client, db_session, mat, wh, sup, qty=10, price=10)
-    client.post(f"/api/v1/sales-orders/{body['id']}/approve")
+    _approve_so(client, body["id"])
     line_id = body["lines"][0]["id"]
     resp = client.post(
         f"/api/v1/sales-orders/{body['id']}/ship",
@@ -137,7 +146,7 @@ def test_ship_insufficient_stock_400(client, db_session):
 def test_ship_partial_then_completed(client, db_session):
     body, wh, mat, sup, _ = _create_so(client, db_session, qty=30, price=15)
     _stock_up(client, db_session, mat, wh, sup, qty=100, price=10)
-    client.post(f"/api/v1/sales-orders/{body['id']}/approve")
+    _approve_so(client, body["id"])
     line_id = body["lines"][0]["id"]
     r1 = client.post(
         f"/api/v1/sales-orders/{body['id']}/ship",
@@ -156,7 +165,7 @@ def test_ship_partial_then_completed(client, db_session):
 def test_ship_over_qty_400(client, db_session):
     body, wh, mat, sup, _ = _create_so(client, db_session, qty=10, price=15)
     _stock_up(client, db_session, mat, wh, sup, qty=100, price=10)
-    client.post(f"/api/v1/sales-orders/{body['id']}/approve")
+    _approve_so(client, body["id"])
     line_id = body["lines"][0]["id"]
     resp = client.post(
         f"/api/v1/sales-orders/{body['id']}/ship",
@@ -177,7 +186,7 @@ def test_void_draft_so_no_moves(client, db_session):
 
 def test_ship_invalid_warehouse_400(client, db_session):
     body, *_ = _create_so(client, db_session)
-    client.post(f"/api/v1/sales-orders/{body['id']}/approve")
+    _approve_so(client, body["id"])
     line_id = body["lines"][0]["id"]
     resp = client.post(
         f"/api/v1/sales-orders/{body['id']}/ship",

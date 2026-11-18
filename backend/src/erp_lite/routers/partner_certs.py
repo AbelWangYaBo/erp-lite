@@ -11,10 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user, require_action
+from erp_lite.deps import ensure_not_self, get_current_user, require_action
 from erp_lite.models import CertStatus, Partner, PartnerCert, PartnerType, User
 from erp_lite.routers.common import paginate
 from erp_lite.schemas.partner_certs import (
+    CertRevokeIn,
     ExpiringCertOut,
     ExpiringCertPage,
     PartnerCertCreate,
@@ -124,12 +125,15 @@ def create_partner_cert(
             detail="有效期至早于生效日期，请检查证照有效期",
         )
     cert = PartnerCert(**payload.model_dump())
+    cert.created_by = current_user.username
     db.add(cert)
     db.flush()
-    write_audit(db, DOC_TYPE, cert.id, "create", current_user.username)
+    write_audit(db, DOC_TYPE, cert.id, "create", current_user.username,
+                role=current_user.role, doc_no=cert.cert_no)
     write_op_log(
         db, current_user.username, "partner_cert_create",
         f"录入供应商资质：{partner.name} {cert.cert_name}（{cert.cert_no}）",
+        doc_type=DOC_TYPE, doc_id=cert.id,
     )
     db.commit()
     db.refresh(cert)
@@ -190,17 +194,65 @@ def audit_partner_cert(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="仅草稿状态的资质可审核，不可重复审核",
         )
+    # 规则 A｜不得自审：资质录入人不得自行审核
+    ensure_not_self(current_user, cert.created_by, "资质审核")
     old_status = cert.audit_status.value
     cert.audit_status = CertStatus.audited
     cert.audited_by = current_user.username
     cert.audited_at = datetime.now()
     write_audit(
         db, DOC_TYPE, cert.id, "audit", current_user.username,
+        role=current_user.role, doc_no=cert.cert_no,
         field="audit_status", old=old_status, new=CertStatus.audited.value,
     )
     write_op_log(
         db, current_user.username, "partner_cert_audit",
         f"审核供应商资质：{cert.partner.name} {cert.cert_name}（{cert.cert_no}）→ audited",
+        doc_type=DOC_TYPE, doc_id=cert.id,
+    )
+    db.commit()
+    db.refresh(cert)
+    return _cert_out(cert)
+
+
+@router.post(
+    "/{cert_id}/revoke",
+    response_model=PartnerCertOut,
+    dependencies=[Depends(require_action("partner_cert.revoke"))],
+)
+def revoke_partner_cert(
+    cert_id: int,
+    body: CertRevokeIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """资质撤销（v3）：audited → revoked（吊销/失效立即可拦，不再等自然过期）。
+
+    撤销后证照不参与 PO 资质拦截判定；原因/人/时留痕。
+    """
+    cert = _get_or_404(db, cert_id)
+    if cert.audit_status != CertStatus.audited:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="仅已审核（audited）状态的资质可撤销",
+        )
+    # 规则 A｜不得自审：资质审核人不得自行撤销
+    ensure_not_self(current_user, cert.audited_by, "资质撤销")
+    old_status = cert.audit_status.value
+    cert.audit_status = CertStatus.revoked
+    cert.revoke_reason = body.reason
+    cert.revoked_by = current_user.username
+    cert.revoked_at = datetime.now()
+    write_audit(
+        db, DOC_TYPE, cert.id, "revoke", current_user.username,
+        role=current_user.role, doc_no=cert.cert_no,
+        field="audit_status", old=old_status, new=CertStatus.revoked.value,
+    )
+    write_op_log(
+        db, current_user.username, "partner_cert_revoke",
+        f"撤销供应商资质：{cert.partner.name} {cert.cert_name}（{cert.cert_no}）→ revoked，"
+        f"原因：{body.reason}",
+        doc_type=DOC_TYPE, doc_id=cert.id,
     )
     db.commit()
     db.refresh(cert)

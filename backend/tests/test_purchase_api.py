@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.models import (
     InventoryMove,
     Material,
@@ -49,8 +49,10 @@ def _create_po(client, db_session, qty=100, price=10):
 
 
 def _approve(client, po_id):
+    switch_user(client, "approver")  # v3：不得自审，审核换 approver
     resp = client.post(f"/api/v1/purchase-orders/{po_id}/approve")
     assert resp.status_code == 200, resp.text
+    switch_user(client, "tester")  # 换回创建人身份
     return resp.json()
 
 
@@ -190,7 +192,8 @@ def test_receive_invalid_warehouse_400(client, db_session):
         json=[{"line_id": line_id, "qty": 10, "warehouse_id": 9999}],
     )
     assert resp.status_code == 400
-    assert "仓库" in resp.json()["detail"]
+    # v3：收货仓库校验改为「须与订单行计划仓库一致」（不存在仓库 id 亦触发一致性错误）
+    assert "一致" in resp.json()["detail"]
 
 
 def test_receive_on_draft_400(client, db_session):

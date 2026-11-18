@@ -55,6 +55,17 @@ def anon_client(db_session):
         app.dependency_overrides.clear()
 
 
+def switch_user(client: TestClient, username: str, role: str = "admin") -> None:
+    """v3 规则 A（不得自审）适配：切换当前用户身份（重新覆盖 get_current_user）。
+
+    审批/判定/审核类动作要求操作人 ≠ 创建/录入人，且 admin 无豁免；
+    流程测试用 tester 创建、switch_user(client, "approver") 换人审核。
+    """
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        id=hash(username) % 100000, username=username, role=role
+    )
+
+
 def grant_supplier_cert(db, partner_id: int) -> None:
     """给供应商补一张 audited 且未过期的资质证照。
 

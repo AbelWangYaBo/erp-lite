@@ -17,6 +17,7 @@ from erp_lite.models import (
     MrpSuggestion,
     Warehouse,
 )
+from conftest import grant_supplier_cert
 from erp_lite.services.inventory import post_move
 
 
@@ -157,6 +158,7 @@ def test_convert_buy_creates_po_draft_and_idempotent(client, db_session):
     db_session.commit()
     resp = _mrp_run(client, raw.id)
     sug_id = resp.json()["suggestions"][0]["id"]
+    grant_supplier_cert(db_session, sup.id)  # v3：MRP 转 PO 前校验供应商资质
     resp = client.post(
         "/api/v1/mrp/suggestions/convert",
         json={"ids": [sug_id], "partner_id": sup.id},

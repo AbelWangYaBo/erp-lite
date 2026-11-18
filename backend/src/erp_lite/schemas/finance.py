@@ -18,6 +18,7 @@ class PayableOut(BaseModel):
     partner_name: str
     source_type: str
     source_id: int
+    source_no: str | None = None  # v3：来源单号（DocLink 可点回 PO/SO）
     amount: Decimal
     settled_amount: Decimal
     status: SettleStatus
@@ -74,6 +75,7 @@ class SettlementOut(BaseModel):
     amount: Decimal
     date: date
     remark: str | None
+    reversed_settlement_id: int | None = None  # v3：冲回单指向被冲回单
     created_by: str | None
     created_at: datetime
     lines: list[SettlementLineOut]
@@ -84,6 +86,13 @@ class SettlementOut(BaseModel):
 class SettlementPage(BaseModel):
     items: list[SettlementOut]
     total: int
+
+
+class SettlementReverseIn(BaseModel):
+    """核销冲回请求（v3）：生成红字冲回单，原记录不删。"""
+
+    date: date
+    remark: str | None = Field(default=None, max_length=255)
 
 
 # ---------- 对账单 ----------
@@ -104,12 +113,13 @@ class StatementDetailOut(BaseModel):
 
 
 class StatementSettlementOut(BaseModel):
-    """期间内该往来单位的收付款记录。"""
+    """期间内该往来单位的收付款记录（is_reverse=True 为冲回单，参与负核销）。"""
 
     id: int
     type: str
     date: date
     amount: Decimal
+    is_reverse: bool = False
     remark: str | None
 
 
@@ -117,17 +127,17 @@ class StatementTotalsOut(BaseModel):
     total_amount: Decimal
     total_settled: Decimal
     total_balance: Decimal
+    period_new_amount: Decimal = Decimal("0")
     settlement_total: Decimal
 
 
 class StatementOut(BaseModel):
-    """对账单（v1 简化口径）：
+    """对账单（v3 勾稽口径）：期初未清 + 期间新增 − 期间核销 = 期末未清（恒等式成立）。
 
-    - details：期间内该 partner 的应付/应收明细（按 created_at 日期落期间）；
-    - settlements：期间收付款记录（按结算单 date 落期间）；
-    - opening_balance：期初（from 之前发生、至今仍未核销结清的余额合计），
-      不做会计意义的严格期初结转；
-    - totals：期间明细的金额/已核销/余额合计与期间收付款合计。
+    - details：期间新增账单明细；
+    - settlements：期间核销记录（冲回单计负核销）；
+    - opening_balance：期初未清（由恒等式倒推）；closing_balance：期末未清
+      （= Σ 全部账单 amount − settled，现状事实）。
     """
 
     partner_id: int
@@ -137,6 +147,7 @@ class StatementOut(BaseModel):
     from_: date | None = Field(default=None, alias="from")
     to: date | None = None
     opening_balance: Decimal
+    closing_balance: Decimal = Decimal("0")
     details: list[StatementDetailOut]
     settlements: list[StatementSettlementOut]
     totals: StatementTotalsOut

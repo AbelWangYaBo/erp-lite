@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user, require_action
+from erp_lite.deps import ensure_not_self, get_current_user, require_action
 from erp_lite.models import (
     AuditRecord,
     Batch,
@@ -23,6 +23,7 @@ from erp_lite.routers.common import change_status, paginate
 from erp_lite.schemas.orders import (
     AuditOut,
     ReceiveLineIn,
+    RejectIn,
     SalesOrderCreate,
     SalesOrderDetail,
     SalesOrderOut,
@@ -97,7 +98,7 @@ def get_sales_order(
         select(AuditRecord)
         .where(AuditRecord.doc_type == DOC_TYPE, AuditRecord.doc_id == so_id)
         .order_by(AuditRecord.id.desc())
-        .limit(20)
+        .limit(200)  # v3：不再截断 20 条
     ).all()
     detail = SalesOrderDetail.model_validate(so)
     detail.audits = [AuditOut.model_validate(a) for a in audits]
@@ -173,9 +174,36 @@ def approve_sales_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="仅草稿状态的销售订单可审核"
         )
+    # 规则 A｜不得自审（DESIGN-v3 §2）
+    ensure_not_self(current_user, so.created_by, "销售订单审核")
+    so.reject_reason = None
     change_status(
         db, so, DOC_TYPE, DocStatus.approved, current_user.username,
         f"审核销售订单：{so.doc_no}",
+    )
+    db.commit()
+    db.refresh(so)
+    return so
+
+
+@router.post("/{so_id}/reject", response_model=SalesOrderOut, dependencies=[Depends(require_action("so.reject"))])
+def reject_sales_order(
+    so_id: int,
+    body: RejectIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SalesOrder:
+    """审批拒绝：approved → draft（退回修改），原因留痕。"""
+    so = _get_or_404(db, so_id)
+    if so.status != DocStatus.approved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="仅已审核状态的销售订单可拒绝"
+        )
+    ensure_not_self(current_user, so.created_by, "销售订单审批")
+    so.reject_reason = body.reason
+    change_status(
+        db, so, DOC_TYPE, DocStatus.draft, current_user.username,
+        f"拒绝销售订单：{so.doc_no}，原因：{body.reason}",
     )
     db.commit()
     db.refresh(so)
@@ -289,17 +317,31 @@ def ship_sales_order(
             db, so, DOC_TYPE, new_status, current_user.username,
             f"销售出库：{so.doc_no} 本次出库金额 {ship_amount}",
         )
-    db.add(
-        Receivable(
-            partner_id=so.partner_id,
-            source_type=DOC_TYPE,
-            source_id=so.id,
-            amount=ship_amount,
+    else:
+        # v3：状态未变的出库也补留痕
+        write_audit(
+            db, DOC_TYPE, so.id, "ship", current_user.username,
+            role=current_user.role, doc_no=so.doc_no,
+            field="shipped_amount", new=str(ship_amount),
         )
+    receivable = Receivable(
+        partner_id=so.partner_id,
+        source_type=DOC_TYPE,
+        source_id=so.id,
+        amount=ship_amount,
+    )
+    db.add(receivable)
+    db.flush()
+    # v3：AR 创建留痕
+    write_audit(
+        db, "receivable", receivable.id, "create", current_user.username,
+        role=current_user.role, doc_no=so.doc_no,
+        field="amount", new=str(ship_amount),
     )
     write_op_log(
         db, current_user.username, "sales_order_ship",
         f"销售出库：{so.doc_no} 本次出库金额 {ship_amount}",
+        doc_type=DOC_TYPE, doc_id=so.id,
     )
     db.commit()
     db.refresh(so)

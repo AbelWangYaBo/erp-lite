@@ -125,6 +125,10 @@ class MoOut(BaseModel):
     issued_qty_cost: Decimal
     transferred_cost: Decimal
     extra_cost: Decimal
+    # v3：完工量持久化（修「UI 完工量恒 0 / 二次完工必超发」断点）+ 拒绝原因
+    received_qty: Decimal = Decimal("0")
+    completed_qty: Decimal = Decimal("0")
+    reject_reason: str | None = None
     remark: str | None
     created_by: str | None
     material: BomMaterialBrief
@@ -139,3 +143,11 @@ class MoDetail(MoOut):
 class MoReceiveIn(BaseModel):
     qty: Decimal = Field(gt=0)
     extra_cost: Decimal = Field(default=Decimal("0"), ge=0)
+
+
+class MoUnissueIn(BaseModel):
+    """领料退回（v3）：按 (物料, 批次) 退回指定数量，成本按原领料单价冲回。"""
+
+    material_id: int
+    qty: Decimal = Field(gt=0)
+    batch_id: int | None = None  # 批次物料必填（与领料口径一致）

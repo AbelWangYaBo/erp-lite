@@ -42,6 +42,7 @@ def ensure_supplier_certified(db: Session, partner_id: int, actor: str | None = 
         select(PartnerCert).where(PartnerCert.partner_id == partner_id)
     ).all()
     today = date.today()
+    # v3：revoked（撤销）证照不再参与有效性判定
     audited = [c for c in certs if c.audit_status == CertStatus.audited]
 
     if any(c.valid_until >= today for c in audited):

@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.main import app
 from erp_lite.models import (
     AuditRecord,
@@ -83,7 +83,9 @@ def _receive_batch(client, db, mat_code, batch_no, qty=10, price="2"):
     )
     assert resp.status_code == 200, resp.text
     po = resp.json()
+    switch_user(client, "approver")
     client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，PO 审核换 approver 后切回
     resp = client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
         json=[
@@ -103,15 +105,27 @@ def _receive_batch(client, db, mat_code, batch_no, qty=10, price="2"):
 
 
 def _inspect(client, batch_id, conclusion="pass", items=None, remark=None):
+    """v3 双段制：qc 录入检项+建议结论 → qa 换人判定（judge≠recorder）。
+
+    conclusion 参数即最终判定结果（兼作 qc 建议结论）；返回 judge 响应。
+    """
     if items is None:
         items = [
             {"name": "外观", "result": "合格" if conclusion == "pass" else "不合格"},
             {"name": "尺寸", "result": "合格" if conclusion == "pass" else "超差"},
         ]
-    payload = {"items": items, "conclusion": conclusion}
+    payload = {"items": items, "suggest_conclusion": conclusion}
     if remark is not None:
         payload["remark"] = remark
-    return client.post(f"/api/v1/batches/{batch_id}/inspect", json=payload)
+    resp = client.post(f"/api/v1/batches/{batch_id}/inspect", json=payload)
+    if resp.status_code != 200:
+        return resp
+    switch_user(client, "qa_user")  # v3：不得自审，判定人 ≠ qc 录入人
+    resp = client.post(
+        f"/api/v1/batches/{batch_id}/judge", json={"conclusion": conclusion}
+    )
+    switch_user(client, "tester")
+    return resp
 
 
 def _dispose(client, batch_id, disposition="return", remark="退货处理"):
@@ -151,7 +165,9 @@ def _mk_so(client, db, mat, wh_id, qty=3, price=9):
     )
     assert resp.status_code == 200, resp.text
     so = resp.json()
+    switch_user(client, "approver")
     client.post(f"/api/v1/sales-orders/{so['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，SO 审核换 approver 后切回
     return so
 
 
@@ -166,7 +182,9 @@ def _mk_mo(client, product_id, wh_id, planned):
     )
     assert resp.status_code == 200, resp.text
     mo = resp.json()
+    switch_user(client, "approver")
     resp = client.post(f"/api/v1/manufacturing-orders/{mo['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，MO 下达换 approver 后切回
     assert resp.status_code == 200, resp.text
     return mo
 
@@ -194,7 +212,7 @@ def test_receive_batch_starts_pending(client, db_session):
 
 
 def test_inspect_pass_sets_qualified_and_writes_record(client, db_session):
-    """QA 判 pass → 批次 qualified，检验记录（检项/结论/检验人）落库。"""
+    """qc 录入 + qa 判 pass → 批次 qualified，检验记录（检项/建议/结论/录入人/判定人）落库。"""
     mat, sup, wh, batch = _receive_batch(client, db_session, "IQ2", "IT-A1")
     resp = _inspect(client, batch.id, conclusion="pass", remark="全项合格")
     assert resp.status_code == 200, resp.text
@@ -208,11 +226,67 @@ def test_inspect_pass_sets_qualified_and_writes_record(client, db_session):
     assert rec.inspected_at is not None
     assert [i["name"] for i in rec.items_json] == ["外观", "尺寸"]
     assert rec.remark == "全项合格"
-    assert rec.inspector == "tester"
+    # v3 双段制：recorder=qc 录入人、judge_by=qa 判定人（原 inspector 字段拆分）
+    assert rec.recorder == "tester"
+    assert rec.judge_by == "qa_user"
+
+
+def test_inspect_only_keeps_batch_pending(client, db_session):
+    """v3 新语义：qc 仅录入（不判定）→ 批次保持 pending，等待 qa 复核。"""
+    mat, sup, wh, batch = _receive_batch(client, db_session, "IQ2B", "IT-A1B")
+    resp = client.post(
+        f"/api/v1/batches/{batch.id}/inspect",
+        json={
+            "items": [{"name": "外观", "result": "合格"}],
+            "suggest_conclusion": "pass",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    db_session.refresh(batch)
+    assert batch.insp_status == InspStatus.pending
+    rec = db_session.scalar(
+        select(InspectionRecord).where(InspectionRecord.batch_id == batch.id)
+    )
+    assert rec.conclusion is None  # 待判定
+    assert rec.recorder == "tester"
+
+
+def test_judge_without_inspection_400(client, db_session):
+    """v3 新语义：无 qc 录入直接 judge → 400（须先录入检验记录）。"""
+    mat, sup, wh, batch = _receive_batch(client, db_session, "IQ2C", "IT-A1C")
+    switch_user(client, "qa_user")
+    resp = client.post(
+        f"/api/v1/batches/{batch.id}/judge", json={"conclusion": "pass"}
+    )
+    switch_user(client, "tester")
+    assert resp.status_code == 400
+    assert "待判定" in resp.json()["detail"] or "录入" in resp.json()["detail"]
+
+
+def test_duplicate_inspection_while_pending_judge_400(client, db_session):
+    """v3 新语义：已有待判定记录时重复录入 → 400（先让 qa 判定）。"""
+    mat, sup, wh, batch = _receive_batch(client, db_session, "IQ2D", "IT-A1D")
+    resp = client.post(
+        f"/api/v1/batches/{batch.id}/inspect",
+        json={
+            "items": [{"name": "外观", "result": "合格"}],
+            "suggest_conclusion": "pass",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    resp = client.post(
+        f"/api/v1/batches/{batch.id}/inspect",
+        json={
+            "items": [{"name": "外观", "result": "合格"}],
+            "suggest_conclusion": "pass",
+        },
+    )
+    assert resp.status_code == 400
+    assert "待判定" in resp.json()["detail"]
 
 
 def test_inspect_fail_sets_rejected(client, db_session):
-    """QA 判 fail → 批次 rejected（隔离）。"""
+    """qa 判 fail → 批次 rejected（隔离）。"""
     mat, sup, wh, batch = _receive_batch(client, db_session, "IQ3", "IT-A2")
     resp = _inspect(client, batch.id, conclusion="fail")
     assert resp.status_code == 200, resp.text
@@ -225,7 +299,7 @@ def test_inspect_fail_sets_rejected(client, db_session):
 
 
 def test_reinspect_qualified_to_rejected(client, db_session):
-    """复判：已合格批次可再判 fail → rejected，记录保留多条历史。"""
+    """复判：已合格批次可再判 fail → rejected，记录保留多条历史（复判走新的录入-判定循环）。"""
     mat, sup, wh, batch = _receive_batch(client, db_session, "IQ4", "IT-A3")
     assert _inspect(client, batch.id, "pass").status_code == 200
     assert _inspect(client, batch.id, "fail").status_code == 200
@@ -255,17 +329,17 @@ def test_inspect_batch_404(client, db_session):
 
 
 def test_inspect_invalid_conclusion_422(client, db_session):
-    """conclusion 非法值 → 422（枚举约束）。"""
+    """suggest_conclusion 非法值 → 422（枚举约束，v3 双段制字段）。"""
     mat, sup, wh, batch = _receive_batch(client, db_session, "IQ6", "IT-A5")
     resp = client.post(
         f"/api/v1/batches/{batch.id}/inspect",
-        json={"items": [{"name": "外观", "result": "合格"}], "conclusion": "ok"},
+        json={"items": [{"name": "外观", "result": "合格"}], "suggest_conclusion": "ok"},
     )
     assert resp.status_code == 422
 
 
 def test_inspect_requires_qa_role_403(client, db_session):
-    """production / warehouse / purchase 判检验 → 403。"""
+    """production / warehouse / purchase 无 batch.inspect → 录入 403（v3 录入归 qc）。"""
     mat, sup, wh, batch = _receive_batch(client, db_session, "IQ7", "IT-A6")
     for role in ("production", "warehouse", "purchase"):
         _switch_role(role)
@@ -273,7 +347,10 @@ def test_inspect_requires_qa_role_403(client, db_session):
             tc = TestClient(app)
             resp = tc.post(
                 f"/api/v1/batches/{batch.id}/inspect",
-                json={"items": [{"name": "外观", "result": "合格"}], "conclusion": "pass"},
+                json={
+                    "items": [{"name": "外观", "result": "合格"}],
+                    "suggest_conclusion": "pass",
+                },
             )
             assert resp.status_code == 403, (role, resp.text)
         finally:
@@ -281,14 +358,30 @@ def test_inspect_requires_qa_role_403(client, db_session):
 
 
 def test_inspect_qa_role_allowed(client, db_session):
-    """qa 角色可判定。"""
+    """v3 双段制：qc 录入建议 → qa 判定放行（判定人 ≠ 录入人）。"""
     mat, sup, wh, batch = _receive_batch(client, db_session, "IQ8", "IT-A7")
-    _switch_role("qa")
+    # qc 段：qc 角色录入（建议 pass），批次仍 pending
+    _switch_role("qc")
     try:
         tc = TestClient(app)
         resp = tc.post(
             f"/api/v1/batches/{batch.id}/inspect",
-            json={"items": [{"name": "外观", "result": "合格"}], "conclusion": "pass"},
+            json={
+                "items": [{"name": "外观", "result": "合格"}],
+                "suggest_conclusion": "pass",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+    finally:
+        _restore_role()
+    db_session.refresh(batch)
+    assert batch.insp_status == InspStatus.pending
+    # qa 段：qa 判定 pass → qualified（qa_user 判定，录入人 qc_user，不自审）
+    _switch_role("qa")
+    try:
+        tc = TestClient(app)
+        resp = tc.post(
+            f"/api/v1/batches/{batch.id}/judge", json={"conclusion": "pass"}
         )
         assert resp.status_code == 200, resp.text
     finally:
@@ -298,7 +391,7 @@ def test_inspect_qa_role_allowed(client, db_session):
 
 
 def test_inspect_writes_audit_and_op_log(client, db_session):
-    """判定动作留痕：审计 action=inspection（含状态流转）+ 操作日志。"""
+    """双段动作留痕：录入 action=inspection（无状态流转）+ 判定 action=judge（pending→qualified）。"""
     mat, sup, wh, batch = _receive_batch(client, db_session, "IQ9", "IT-A8")
     assert _inspect(client, batch.id, "pass").status_code == 200
     audits = db_session.scalars(
@@ -307,9 +400,13 @@ def test_inspect_writes_audit_and_op_log(client, db_session):
         )
     ).all()
     assert any(a.action == "inspection" for a in audits)
+    # v3：录入段仅记录建议（不携带状态流转），状态流转在 qa 判定段
     insp_audit = next(a for a in audits if a.action == "inspection")
-    assert insp_audit.old_value == "pending"
-    assert insp_audit.new_value == "qualified"
+    assert insp_audit.new_value is None or "录入建议" in (insp_audit.new_value or "")
+    judge_audits = [a for a in audits if a.action == "judge"]
+    assert judge_audits, "v3：判定段须写 action=judge 审计"
+    assert judge_audits[0].old_value == "pending"
+    assert judge_audits[0].new_value == "qualified"
     log = db_session.scalar(
         select(OperationLog).where(OperationLog.action == "batch_inspect")
     )
@@ -497,21 +594,47 @@ def test_issue_rejected_batch_400(client, db_session):
     assert "隔离" in resp.json()["detail"]
 
 
-def test_mo_receipt_batch_qualified_shippable(client, db_session):
-    """MO 完工成品批次保持 qualified（无需检验即可出库），supplier 为空。"""
+def test_mo_receipt_batch_pending_then_judged_shippable(client, db_session):
+    """v3 规则 B：MO 完工成品批次为 pending（qc 录入 → qa 判定放行后方可出库），supplier 为空。"""
     wh = _mk_wh(db_session, "WQ2")
     product = _mk_mat(
         db_session, "FGQ1", batch_required=True, category=MaterialCategory.finished
     )
+    raw = _mk_mat(db_session, "RGQ1", batch_required=False)
     db_session.commit()
     mo = _mk_mo(client, product.id, wh.id, 5)
+    # v3：禁止零领料完工，先领料再完工
+    from erp_lite.services.inventory import post_move
+
+    post_move(db_session, material_id=raw.id, warehouse_id=wh.id,
+              move_type="adjust", qty=Decimal("100"), unit_cost=Decimal("1"),
+              source_type="adjust", source_id=0)
+    db_session.commit()
+    assert _issue(
+        client, mo["id"], [{"material_id": raw.id, "qty": 5}]
+    ).status_code == 200
     resp = _receive_mo(client, mo["id"], 5)
     assert resp.status_code == 200, resp.text
     batch = db_session.scalar(select(Batch).where(Batch.material_id == product.id))
-    assert batch.insp_status == InspStatus.qualified
+    # v3：完工批次 pending（不再默认 qualified）
+    assert batch.insp_status == InspStatus.pending
     assert batch.supplier_id is None
-    # 成品批次直接出库放行
+    # pending 批次出库被拦截
     so = _mk_so(client, db_session, product, wh.id, qty=2)
+    resp = client.post(
+        f"/api/v1/sales-orders/{so['id']}/ship",
+        json=[
+            {
+                "line_id": so["lines"][0]["id"],
+                "qty": 2,
+                "warehouse_id": wh.id,
+                "batch_id": batch.id,
+            }
+        ],
+    )
+    assert resp.status_code == 400
+    # qc 录入 + qa 换人判定 pass → 放行（复用同一张 SO 出库）
+    assert _inspect(client, batch.id, "pass").status_code == 200
     resp = client.post(
         f"/api/v1/sales-orders/{so['id']}/ship",
         json=[
@@ -579,6 +702,9 @@ def _build_two_layer_chain(client, db):
     assert resp.status_code == 200, resp.text
     semi_batch = db.scalar(select(Batch).where(Batch.material_id == semi.id))
     assert semi_batch is not None
+    # v3 规则 B：完工 SEMI 批次 pending，MO2 领用前须 qc 录入 + qa 判定放行
+    assert semi_batch.insp_status == InspStatus.pending
+    assert _inspect(client, semi_batch.id, "pass").status_code == 200
     # 成品：MO2 领 SEMI 批次 → 完工生成 FG 批次
     mo2 = _mk_mo(client, fg.id, wh.id, 2)
     resp = _issue(
@@ -647,8 +773,19 @@ def test_trace_backward_fg_batch_400_direction(client, db_session):
     product = _mk_mat(
         db_session, "FGW1", batch_required=True, category=MaterialCategory.finished
     )
+    raw = _mk_mat(db_session, "RGW1", batch_required=False)
     db_session.commit()
     mo = _mk_mo(client, product.id, wh.id, 3)
+    # v3：禁止零领料完工，先备料领料再完工
+    from erp_lite.services.inventory import post_move
+
+    post_move(db_session, material_id=raw.id, warehouse_id=wh.id,
+              move_type="adjust", qty=Decimal("100"), unit_cost=Decimal("1"),
+              source_type="adjust", source_id=0)
+    db_session.commit()
+    assert _issue(
+        client, mo["id"], [{"material_id": raw.id, "qty": 3}]
+    ).status_code == 200
     assert _receive_mo(client, mo["id"], 3).status_code == 200
     batch = db_session.scalar(select(Batch).where(Batch.material_id == product.id))
     resp = client.get(f"/api/v1/batches/{batch.id}/trace-backward")
@@ -688,6 +825,8 @@ def test_issue_intermediate_batch_with_bom(client, db_session):
     ).status_code == 200
     assert _receive_mo(client, mo1["id"], 5).status_code == 200
     semi_batch = db_session.scalar(select(Batch).where(Batch.material_id == semi.id))
+    # v3 规则 B：完工 SEMI 批次 pending，MO2 领用前须 qc 录入 + qa 判定放行
+    assert _inspect(client, semi_batch.id, "pass").status_code == 200
     mo2 = _mk_mo(client, fg.id, wh.id, 5)
     resp = _issue(
         client, mo2["id"], [{"material_id": semi.id, "qty": 5, "batch_id": semi_batch.id}]

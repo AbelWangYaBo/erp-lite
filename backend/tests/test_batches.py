@@ -11,13 +11,13 @@ from sqlalchemy import select
 
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.main import app
 from erp_lite.models import Batch, InventoryMove, Material, MaterialCategory
 from erp_lite.models.base import InspStatus
 from erp_lite.models.master_data import Partner, PartnerType, Warehouse
 from erp_lite.services.batches import get_available, get_batch_stock
-from erp_lite.services.inventory import get_avg_cost, get_stock
+from erp_lite.services.inventory import get_avg_cost, get_stock, post_move
 
 
 def _mk_wh(db, code="W1"):
@@ -74,7 +74,9 @@ def _mk_batch_material_po_received(client, db, qty, price, batch_no, mat_code="R
     )
     assert resp.status_code == 200, resp.text
     po = resp.json()
+    switch_user(client, "approver")
     resp = client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，PO 审核换 approver 后切回
     assert resp.status_code == 200, resp.text
     resp = client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
@@ -93,15 +95,30 @@ def _mk_batch_material_po_received(client, db, qty, price, batch_no, mat_code="R
     return mat, sup, po, batch
 
 
+def _approve_po(client, po_id):
+    switch_user(client, "approver")  # v3：不得自审，PO 审核换 approver
+    resp = client.post(f"/api/v1/purchase-orders/{po_id}/approve")
+    switch_user(client, "tester")
+    assert resp.status_code == 200, resp.text
+    return resp
+
+
 def _inspect_pass(client, batch_id):
-    """V2-S3：QA 判定合格放行（pending 批次领料/出库被拦截，先判合格再用）。"""
+    """v3 双段制：qc 录入（建议 pass）→ qa 换人判定 pass 放行。"""
     resp = client.post(
         f"/api/v1/batches/{batch_id}/inspect",
         json={
             "items": [{"name": "外观", "result": "合格"}],
-            "conclusion": "pass",
+            "suggest_conclusion": "pass",
         },
     )
+    assert resp.status_code == 200, resp.text
+    switch_user(client, "qa_user")  # v3：不得自审，判定人 ≠ qc 录入人
+    resp = client.post(
+        f"/api/v1/batches/{batch_id}/judge",
+        json={"conclusion": "pass"},
+    )
+    switch_user(client, "tester")
     assert resp.status_code == 200, resp.text
 
 
@@ -142,7 +159,7 @@ def test_receive_batch_required_without_batch_no_400(client, db_session):
         },
     )
     po = resp.json()
-    client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    _approve_po(client, po['id'])  # v3：不得自审，PO 审核换 approver
     resp = client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
         json=[{"line_id": po["lines"][0]["id"], "qty": 5, "warehouse_id": wh.id}],
@@ -152,7 +169,7 @@ def test_receive_batch_required_without_batch_no_400(client, db_session):
 
 
 def test_receive_reuses_existing_batch_no(client, db_session):
-    """同批次号再次入库复用同一批次记录，现存累加、台账只有一条。"""
+    """v3 语义反转：已存在批次号再入库一律 400（批次号不复用），台账仍只有一条、存量不变。"""
     mat, sup, po1, batch = _mk_batch_material_po_received(
         client, db_session, 10, "2", "LOT-R"
     )
@@ -174,7 +191,7 @@ def test_receive_reuses_existing_batch_no(client, db_session):
         },
     )
     po2 = resp.json()
-    client.post(f"/api/v1/purchase-orders/{po2['id']}/approve")
+    _approve_po(client, po2['id'])  # v3：不得自审，PO 审核换 approver
     resp = client.post(
         f"/api/v1/purchase-orders/{po2['id']}/receive",
         json=[
@@ -186,13 +203,15 @@ def test_receive_reuses_existing_batch_no(client, db_session):
             }
         ],
     )
-    assert resp.status_code == 200, resp.text
+    # v3：批次号不复用（原「pending 追加复用」语义已废除），提示换新批次号
+    assert resp.status_code == 400, resp.text
+    assert "不复用" in resp.json()["detail"]
     batches = db_session.scalars(select(Batch).where(Batch.batch_no == "LOT-R")).all()
     assert len(batches) == 1
     qty, amount = get_batch_stock(db_session, batch.id)
-    assert qty == Decimal("15")
-    # 移动加权：(10*2 + 5*4) / 15 = 40/15
-    assert amount == Decimal("40")
+    # v3：拒绝入库后原批次存量不变（不追加 5、金额不叠加）
+    assert qty == Decimal("10")
+    assert amount == Decimal("20")
 
 
 def test_receive_batch_no_belongs_to_other_material_400(client, db_session):
@@ -220,7 +239,7 @@ def test_receive_batch_no_belongs_to_other_material_400(client, db_session):
         },
     )
     po2 = resp.json()
-    client.post(f"/api/v1/purchase-orders/{po2['id']}/approve")
+    _approve_po(client, po2['id'])  # v3：不得自审，PO 审核换 approver
     resp = client.post(
         f"/api/v1/purchase-orders/{po2['id']}/receive",
         json=[
@@ -233,7 +252,8 @@ def test_receive_batch_no_belongs_to_other_material_400(client, db_session):
         ],
     )
     assert resp.status_code == 400
-    assert "物料" in resp.json()["detail"]
+    # v3：跨物料同批次号也被「批次号不复用」统一拦截（防来源失真）
+    assert "不复用" in resp.json()["detail"]
 
 
 # ---------- 批次级现存 / 均价（手算核对） ----------
@@ -263,7 +283,7 @@ def test_multi_batch_independent_stock_and_avg_cost(client, db_session):
             },
         )
         po = resp.json()
-        client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+        _approve_po(client, po['id'])  # v3：不得自审，PO 审核换 approver
         resp = client.post(
             f"/api/v1/purchase-orders/{po['id']}/receive",
             json=[
@@ -309,7 +329,7 @@ def test_batch_avg_cost_after_outbound_hand_calc(client, db_session):
         },
     )
     po2 = resp.json()
-    client.post(f"/api/v1/purchase-orders/{po2['id']}/approve")
+    _approve_po(client, po2['id'])  # v3：不得自审，PO 审核换 approver
     client.post(
         f"/api/v1/purchase-orders/{po2['id']}/receive",
         json=[
@@ -338,7 +358,9 @@ def test_batch_avg_cost_after_outbound_hand_calc(client, db_session):
         },
     )
     so = resp.json()
+    switch_user(client, "approver")  # v3：不得自审，SO 审核换 approver
     client.post(f"/api/v1/sales-orders/{so['id']}/approve")
+    switch_user(client, "tester")
     resp = client.post(
         f"/api/v1/sales-orders/{so['id']}/ship",
         json=[
@@ -384,7 +406,7 @@ def test_non_batch_material_v1_path_no_batch(client, db_session):
         },
     )
     po = resp.json()
-    client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    _approve_po(client, po['id'])  # v3：不得自审，PO 审核换 approver
     # 不传 batch_no（v1 请求体原样）
     resp = client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
@@ -407,7 +429,9 @@ def test_non_batch_material_v1_path_no_batch(client, db_session):
         },
     )
     so = resp.json()
+    switch_user(client, "approver")  # v3：不得自审，SO 审核换 approver
     client.post(f"/api/v1/sales-orders/{so['id']}/approve")
+    switch_user(client, "tester")
     resp = client.post(
         f"/api/v1/sales-orders/{so['id']}/ship",
         json=[{"line_id": so["lines"][0]["id"], "qty": 4, "warehouse_id": wh.id}],
@@ -437,7 +461,9 @@ def _mk_so_shipped(client, db, batch):
         },
     )
     so = resp.json()
+    switch_user(client, "approver")  # v3：不得自审，SO 审核换 approver
     client.post(f"/api/v1/sales-orders/{so['id']}/approve")
+    switch_user(client, "tester")
     return so, wh, cus
 
 
@@ -518,7 +544,9 @@ def _mk_mo_for(db, product, wh):
 
 
 def _approve_mo(client, mo_id):
+    switch_user(client, "approver")  # v3：不得自审，MO 下达换 approver
     resp = client.post(f"/api/v1/manufacturing-orders/{mo_id}/approve")
+    switch_user(client, "tester")
     assert resp.status_code == 200, resp.text
 
 
@@ -581,13 +609,31 @@ def test_issue_batch_of_other_material_400(client, db_session):
 # ---------- MO 完工入库自动生成成品批次 ----------
 
 
-def test_mo_receive_creates_qualified_finished_batch(client, db_session):
-    """完工入库自动生成成品批次：batch_no=MO单号-序号、qualified、supplier 为空。"""
+def _issue_raw_for_mo(client, db, mo, qty):
+    """给 MO 领料：造非批次原料并入库存货后按行领料（v3 禁止零领料完工）。"""
+    raw = _mk_mat(db, f"RAW{mo.id}", batch_required=False)
+    wh = db.get(Warehouse, mo.warehouse_id)
+    db.commit()
+    post_move(db, material_id=raw.id, warehouse_id=wh.id,
+              move_type="adjust", qty=Decimal("1000"), unit_cost=Decimal("1"),
+              source_type="adjust", source_id=0)
+    db.commit()
+    resp = client.post(
+        f"/api/v1/manufacturing-orders/{mo.id}/issue",
+        json={"lines": [{"material_id": raw.id, "qty": qty}]},
+    )
+    assert resp.status_code == 200, resp.text
+    return raw
+
+
+def test_mo_receive_creates_pending_finished_batch(client, db_session):
+    """完工入库自动生成成品批次：batch_no=MO单号-序号、pending（v3 双段检验）、supplier 为空。"""
     wh = _mk_wh(db_session)
     product = _mk_mat(db_session, "FP1", batch_required=True, category=MaterialCategory.finished)
     db_session.commit()
     mo = _mk_mo_for(db_session, product, wh)
     _approve_mo(client, mo.id)
+    _issue_raw_for_mo(client, db_session, mo, 5)  # v3：先领料（禁零领料完工）
     resp = client.post(
         f"/api/v1/manufacturing-orders/{mo.id}/receive",
         json={"qty": 10, "extra_cost": 0},
@@ -598,8 +644,8 @@ def test_mo_receive_creates_qualified_finished_batch(client, db_session):
     )
     assert batch is not None
     assert batch.batch_no == f"{mo.doc_no}-1"
-    # S2 阶段直接建为 qualified（S3 接 QA 检验判定），注释见 services/batches.py
-    assert batch.insp_status == InspStatus.qualified
+    # v3 规则 B：成品批次也走双段检验（qc 录入 → qa 判定），完工建为 pending
+    assert batch.insp_status == InspStatus.pending
     assert batch.source_type == "manufacturing_order"
     assert batch.source_id == mo.id
     assert batch.supplier_id is None
@@ -612,6 +658,7 @@ def test_mo_receive_multiple_receipts_seq_increments(client, db_session):
     db_session.commit()
     mo = _mk_mo_for(db_session, product, wh)
     _approve_mo(client, mo.id)
+    _issue_raw_for_mo(client, db_session, mo, 10)  # v3：先领料（禁零领料完工）
     for qty in (4, 6):
         resp = client.post(
             f"/api/v1/manufacturing-orders/{mo.id}/receive",
@@ -632,6 +679,7 @@ def test_mo_receive_non_batch_product_no_batch(client, db_session):
     db_session.commit()
     mo = _mk_mo_for(db_session, product, wh)
     _approve_mo(client, mo.id)
+    _issue_raw_for_mo(client, db_session, mo, 5)  # v3：先领料（禁零领料完工）
     resp = client.post(
         f"/api/v1/manufacturing-orders/{mo.id}/receive",
         json={"qty": 5, "extra_cost": 0},
@@ -660,7 +708,7 @@ def test_get_available_qualified_filter_switch(client, db_session):
         },
     )
     po = resp.json()
-    client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    _approve_po(client, po['id'])  # v3：不得自审，PO 审核换 approver
     client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
         json=[
@@ -711,7 +759,7 @@ def test_batches_list_pagination_and_filters(client, db_session):
             },
         )
         po = resp.json()
-        client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+        _approve_po(client, po['id'])  # v3：不得自审，PO 审核换 approver
         client.post(
             f"/api/v1/purchase-orders/{po['id']}/receive",
             json=[
@@ -763,11 +811,13 @@ def test_batch_detail_stock_avg_insp_status(client, db_session):
 
 
 def test_warehouse_role_can_query_batches(client, db_session):
-    """仓库角色可查批次台账（batch.trace），本阶段无 inspect.judge 也不影响查询。"""
+    """仓库角色可查批次台账（batch.trace），无检验/判定动作也不影响查询。"""
     from erp_lite.services.rbac import actions_for
 
     assert "batch.trace" in actions_for("warehouse")
-    assert "inspect.judge" not in actions_for("warehouse")
+    # v3 双段制：检验录入归 qc、判定归 qa，仓库角色均无
+    assert "batch.inspect" not in actions_for("warehouse")
+    assert "batch.judge" not in actions_for("warehouse")
 
     mat, sup, po, batch = _mk_batch_material_po_received(
         client, db_session, 10, "2", "ROLE-1"

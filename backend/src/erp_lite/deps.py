@@ -59,3 +59,13 @@ def require_action(action: str):
         return current_user
 
     return dependency
+
+
+def ensure_not_self(current_user: User, creator: str | None, action_label: str) -> None:
+    """规则 A｜不得自审（DESIGN-v3 §2）：审核/判定/撤销类动作的操作人
+    不得是单据创建/录入人；admin 无豁免（演示职责分离）。"""
+    if creator and current_user.username == creator:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{action_label}不允许自审：操作人须与创建/录入人不同",
+        )

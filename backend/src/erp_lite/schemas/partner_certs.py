@@ -42,6 +42,10 @@ class PartnerCertOut(BaseModel):
     audit_status: CertStatus
     audited_by: str | None
     audited_at: datetime | None
+    # v3：撤销留痕（audited → revoked）
+    revoke_reason: str | None = None
+    revoked_by: str | None = None
+    revoked_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -49,6 +53,12 @@ class PartnerCertOut(BaseModel):
 class PartnerCertPage(BaseModel):
     items: list[PartnerCertOut]
     total: int
+
+
+class CertRevokeIn(BaseModel):
+    """资质撤销原因（v3，必填留痕）。"""
+
+    reason: str = Field(min_length=1, max_length=255)
 
 
 class ExpiringCertOut(PartnerCertOut):

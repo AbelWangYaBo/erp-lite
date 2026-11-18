@@ -10,13 +10,16 @@ from erp_lite.models.base import Base
 
 
 class Role(str, enum.Enum):
-    """系统角色（GMP 岗位职责分离，见 PRD-v2 §2.5）。"""
+    """系统角色（v3 八角色职责分离，见 DESIGN-v3 §3；列存 VARCHAR 扩枚举无需迁移）。"""
 
     admin = "admin"
     purchase = "purchase"
+    sales = "sales"
     warehouse = "warehouse"
     production = "production"
+    qc = "qc"
     qa = "qa"
+    finance = "finance"
 
 
 class User(Base):

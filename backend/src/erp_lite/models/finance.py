@@ -55,6 +55,8 @@ class Settlement(Base):
     amount: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False)
     date: Mapped[date] = mapped_column(Date, nullable=False)
     remark: Mapped[str | None] = mapped_column(String(255), default=None)
+    # v3：冲回单指向被冲回的核销单（红字核销，原记录不删）
+    reversed_settlement_id: Mapped[int | None] = mapped_column(default=None)
     created_by: Mapped[str | None] = mapped_column(String(64), default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

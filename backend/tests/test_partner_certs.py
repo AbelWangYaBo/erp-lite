@@ -204,11 +204,14 @@ def test_qa_audit_cert_200(db_session, make_role_client, supplier):
     cert = make_role_client("purchase").post(
         "/api/v1/partner-certs", json=make_cert_payload(supplier.id)
     ).json()
-    resp = make_role_client("qa").post(f"/api/v1/partner-certs/{cert['id']}/audit")
+    # v3：不得自审，审核换 qa_user（录入人是 tester）
+    resp = make_role_client("qa", username="qa_user").post(
+        f"/api/v1/partner-certs/{cert['id']}/audit"
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["audit_status"] == "audited"
-    assert body["audited_by"] == "tester"
+    assert body["audited_by"] == "qa_user"
     assert body["audited_at"] is not None
 
 
@@ -331,11 +334,20 @@ def test_audit_then_po_create_and_approve_ok(db_session, make_role_client, suppl
     cert = make_role_client("purchase").post(
         "/api/v1/partner-certs", json=make_cert_payload(supplier.id)
     ).json()
-    assert make_role_client("qa").post(f"/api/v1/partner-certs/{cert['id']}/audit").status_code == 200
+    # v3：资质审核不得自审，换 qa_user 审核
+    assert (
+        make_role_client("qa", username="qa_user")
+        .post(f"/api/v1/partner-certs/{cert['id']}/audit")
+        .status_code
+        == 200
+    )
     admin = make_role_client("admin")
     po = admin.post("/api/v1/purchase-orders", json=po_refs)
     assert po.status_code == 200, po.text
-    resp = admin.post(f"/api/v1/purchase-orders/{po.json()['id']}/approve")
+    # v3：PO 审核不得自审，换 approver（同 admin 角色）
+    resp = make_role_client("admin", username="approver").post(
+        f"/api/v1/purchase-orders/{po.json()['id']}/approve"
+    )
     assert resp.status_code == 200, resp.text
 
 
@@ -347,7 +359,10 @@ def test_po_approve_blocked_after_cert_expired(db_session, make_role_client, sup
     cert = db_session.scalar(select(PartnerCert).where(PartnerCert.partner_id == supplier.id))
     cert.valid_until = date.today() - timedelta(days=1)
     db_session.commit()
-    resp = admin.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    # v3：不得自审，审核换 approver（否则先撞自审 400 而非资质拦截）
+    resp = make_role_client("admin", username="approver").post(
+        f"/api/v1/purchase-orders/{po['id']}/approve"
+    )
     assert resp.status_code == 400
     assert "资质已过期" in resp.json()["detail"]
 

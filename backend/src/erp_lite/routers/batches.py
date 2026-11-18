@@ -1,6 +1,6 @@
-"""批次台账查询（V2-S2 只读；S3 加 inspect/dispose/追溯）。
+"""批次台账查询（V2-S2 只读；v3 双段检验 inspect/judge + 处置闭环 + 追溯）。
 
-权限：全员可查（batch.trace，五个演示角色均持有），GMP 记录可及性。
+权限：全员可查（batch.trace，八角色均持有），GMP 记录可及性。
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from erp_lite.database import get_db
-from erp_lite.deps import get_current_user, require_action
-from erp_lite.models import Batch, InspStatus, User
+from erp_lite.deps import ensure_not_self, get_current_user, require_action
+from erp_lite.models import Batch, InspectionRecord, InspStatus, PurchaseOrder, User
 from erp_lite.routers.common import paginate
 from erp_lite.schemas.batches import (
     BatchDetail,
@@ -18,17 +18,21 @@ from erp_lite.schemas.batches import (
     DisposeIn,
     InspectIn,
     InspectionRecordOut,
+    JudgeIn,
     TraceOut,
 )
 from erp_lite.services.audit import write_audit, write_op_log
 from erp_lite.services.batches import (
-    dispose_batch,
+    dispose_close,
     get_batch_stock,
-    inspect_batch,
+    judge_batch,
+    record_inspection,
+    scrap_batch,
     trace_backward,
     trace_forward,
 )
 from erp_lite.services.inventory import get_batch_avg_cost
+from erp_lite.services.returns import create_purchase_return
 
 router = APIRouter(
     prefix="/api/v1/batches",
@@ -91,51 +95,102 @@ def _valueerror_400(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
+@router.get("/{batch_id}/inspections", response_model=list[InspectionRecordOut])
+def list_inspections(
+    batch_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[InspectionRecordOut]:
+    """批次检验记录历史（含检项明细/建议结论/判定人，v3 补检项可查断点）。"""
+    _get_or_404(db, batch_id)
+    records = db.scalars(
+        select(InspectionRecord)
+        .where(InspectionRecord.batch_id == batch_id)
+        .order_by(InspectionRecord.id.desc())
+    ).all()
+    return [InspectionRecordOut.model_validate(r) for r in records]
+
+
 @router.post(
     "/{batch_id}/inspect",
     response_model=InspectionRecordOut,
-    dependencies=[Depends(require_action("inspect.judge"))],
+    dependencies=[Depends(require_action("batch.inspect"))],
 )
 def inspect_batch_api(
     batch_id: int,
     body: InspectIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
-    """QA 检验判定：pass → qualified / fail → rejected，检验记录+审计留痕。"""
+) -> InspectionRecord:
+    """qc 段：录入检项与建议结论（批次保持 pending，等待 qa 复核判定）。"""
     batch = _get_or_404(db, batch_id)
-    old_status = batch.insp_status.value
     try:
-        record = inspect_batch(
+        record = record_inspection(
             db,
             batch,
             items=[item.model_dump() for item in body.items],
-            conclusion=body.conclusion,
-            inspector=current_user.username,
+            suggest_conclusion=body.suggest_conclusion,
+            recorder=current_user.username,
             remark=body.remark,
         )
     except ValueError as exc:
         raise _valueerror_400(exc)
-    new_status = batch.insp_status.value
     write_audit(
         db, "batch", batch.id, "inspection", current_user.username,
-        field="insp_status", old=old_status, new=new_status,
+        role=current_user.role, doc_no=batch.batch_no,
+        field="inspection_record", new=f"录入建议：{body.suggest_conclusion}",
     )
     write_op_log(
         db, current_user.username, "batch_inspect",
-        f"检验判定：批次 {batch.batch_no} {old_status} → {new_status}（{body.conclusion}）",
+        f"检验录入：批次 {batch.batch_no}，建议结论 {body.suggest_conclusion}，待 qa 判定",
+        doc_type="batch", doc_id=batch.id,
     )
     db.commit()
     db.refresh(record)
-    return {
-        "id": record.id,
-        "batch_id": record.batch_id,
-        "items": record.items_json,
-        "conclusion": record.conclusion,
-        "inspector": record.inspector,
-        "inspected_at": record.inspected_at,
-        "remark": record.remark,
-    }
+    return record
+
+
+@router.post(
+    "/{batch_id}/judge",
+    response_model=BatchOut,
+    dependencies=[Depends(require_action("batch.judge"))],
+)
+def judge_batch_api(
+    batch_id: int,
+    body: JudgeIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Batch:
+    """qa 段：复核判定 pass → qualified / fail → rejected（不得自审，操作人≠qc 录入人）。"""
+    batch = _get_or_404(db, batch_id)
+    pending_rec = db.scalar(
+        select(InspectionRecord)
+        .where(
+            InspectionRecord.batch_id == batch.id,
+            InspectionRecord.conclusion.is_(None),
+        )
+        .order_by(InspectionRecord.id.desc())
+    )
+    ensure_not_self(current_user, pending_rec.recorder if pending_rec else None, "检验复核判定")
+    old_status = batch.insp_status.value
+    try:
+        judge_batch(db, batch, conclusion=body.conclusion, judge_by=current_user.username)
+    except ValueError as exc:
+        raise _valueerror_400(exc)
+    new_status = batch.insp_status.value
+    write_audit(
+        db, "batch", batch.id, "judge", current_user.username,
+        role=current_user.role, doc_no=batch.batch_no,
+        field="insp_status", old=old_status, new=new_status,
+    )
+    write_op_log(
+        db, current_user.username, "batch_judge",
+        f"复核判定：批次 {batch.batch_no} {old_status} → {new_status}（{body.conclusion}）",
+        doc_type="batch", doc_id=batch.id,
+    )
+    db.commit()
+    db.refresh(batch)
+    return batch
 
 
 @router.post(
@@ -149,19 +204,42 @@ def dispose_batch_api(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Batch:
-    """不合格批次处置：return 退货 / destroy 销毁 → insp_status=closed 留痕。"""
+    """不合格批次处置（v3 账务闭环）：
+
+    - return：生成采购退货单（红字出库+冲未清应付+冲 PO 已收量，completed 回 partial）
+    - destroy：报废流水清批次现存 + loss_amount 留损失
+    - 均 → insp_status=closed；成品/半成品批次仅支持 destroy。
+    """
     batch = _get_or_404(db, batch_id)
+    old_status = batch.insp_status.value
+    ret_doc_no: str | None = None
     try:
-        dispose_batch(db, batch, disposition=body.disposition, remark=body.remark)
+        if body.disposition == "return":
+            po = db.get(PurchaseOrder, batch.source_id)
+            if po is None:
+                raise ValueError("批次来源采购订单不存在，无法生成退货单")
+            ret = create_purchase_return(
+                db, batch=batch, po=po, reason=body.remark, actor=current_user.username
+            )
+            ret_doc_no = ret.doc_no
+        else:
+            loss = scrap_batch(db, batch, actor=current_user.username)
+        dispose_close(batch, disposition=body.disposition, remark=body.remark)
     except ValueError as exc:
         raise _valueerror_400(exc)
     write_audit(
         db, "batch", batch.id, "dispose", current_user.username,
-        field="insp_status", old=InspStatus.rejected.value, new=InspStatus.closed.value,
+        role=current_user.role, doc_no=batch.batch_no,
+        field="insp_status", old=old_status, new=InspStatus.closed.value,
     )
     write_op_log(
         db, current_user.username, "batch_dispose",
-        f"不合格处置：批次 {batch.batch_no} {body.disposition}，状态 → closed",
+        (
+            f"不合格处置：批次 {batch.batch_no} 退货 {ret_doc_no}，已冲应付/已收量"
+            if ret_doc_no
+            else f"不合格处置：批次 {batch.batch_no} 报废，冲减现存金额 {loss}，状态 → closed"
+        ),
+        doc_type="batch", doc_id=batch.id,
     )
     db.commit()
     db.refresh(batch)

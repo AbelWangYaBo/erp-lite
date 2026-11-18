@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.models import (
     ManufacturingOrder,
     Material,
@@ -42,7 +42,9 @@ def test_full_production_loop(client, db_session):
     )
     assert resp.status_code == 200, resp.text
     po = resp.json()
+    switch_user(client, "approver")
     client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，PO 审核换 approver 后切回
     resp = client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
         json=[{"line_id": po["lines"][0]["id"], "qty": 100, "warehouse_id": wh.id}],
@@ -77,7 +79,9 @@ def test_full_production_loop(client, db_session):
     # MO 建在物料默认仓/转换仓 → 指定 W1
     resp = client.get(f"/api/v1/manufacturing-orders/{mo.id}")
     assert resp.json()["status"] == "draft"
+    switch_user(client, "approver")
     client.post(f"/api/v1/manufacturing-orders/{mo.id}/approve")
+    switch_user(client, "tester")  # v3：不得自审，MO 下达换 approver 后切回
 
     # 6) 领料（整单按 BOM）：60kg RAW @10 = 600 → 原料现存 40
     resp = client.post(f"/api/v1/manufacturing-orders/{mo.id}/issue", json={})

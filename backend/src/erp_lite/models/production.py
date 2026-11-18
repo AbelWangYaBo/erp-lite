@@ -72,6 +72,10 @@ class ManufacturingOrder(Base, DocMixin):
     issued_qty_cost: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
     transferred_cost: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
     extra_cost: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
+    # v3：完工量持久化（修「UI 完工量恒 0」）；拒绝原因留痕
+    received_qty: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
+    completed_qty: Mapped[float] = mapped_column(Numeric(18, 4), default=0, nullable=False)
+    reject_reason: Mapped[str | None] = mapped_column(String(255), default=None)
 
     material = relationship("Material")
     warehouse = relationship("Warehouse")

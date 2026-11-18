@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from conftest import grant_supplier_cert
+from conftest import grant_supplier_cert, switch_user
 from erp_lite.database import get_db
 from erp_lite.deps import get_current_user
 from erp_lite.main import app
@@ -83,7 +83,9 @@ def _po_receive(client, db, mat, sup, wh, batch_no, qty, price):
     )
     assert resp.status_code == 200, resp.text
     po = resp.json()
+    switch_user(client, "approver")
     client.post(f"/api/v1/purchase-orders/{po['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，PO 审核换 approver 后切回
     resp = client.post(
         f"/api/v1/purchase-orders/{po['id']}/receive",
         json=[
@@ -99,13 +101,40 @@ def _po_receive(client, db, mat, sup, wh, batch_no, qty, price):
 
 
 def _inspect_pass(client, batch_id):
+    """v3 双段制：qc 录入（suggest_conclusion）→ qa 换人判定 pass。"""
     resp = client.post(
         f"/api/v1/batches/{batch_id}/inspect",
         json={
             "items": [{"name": "外观", "result": "合格"}],
-            "conclusion": "pass",
+            "suggest_conclusion": "pass",
         },
     )
+    assert resp.status_code == 200, resp.text
+    switch_user(client, "qa_user")  # v3：不得自审，判定人 ≠ qc 录入人
+    resp = client.post(
+        f"/api/v1/batches/{batch_id}/judge",
+        json={"conclusion": "pass"},
+    )
+    switch_user(client, "tester")
+    assert resp.status_code == 200, resp.text
+
+
+def _inspect_fail(client, batch_id):
+    """v3 双段制：qc 录入（建议 fail）→ qa 换人判定 fail（批次 rejected）。"""
+    resp = client.post(
+        f"/api/v1/batches/{batch_id}/inspect",
+        json={
+            "items": [{"name": "外观", "result": "不合格"}],
+            "suggest_conclusion": "fail",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    switch_user(client, "qa_user")  # v3：不得自审，判定人 ≠ qc 录入人
+    resp = client.post(
+        f"/api/v1/batches/{batch_id}/judge",
+        json={"conclusion": "fail"},
+    )
+    switch_user(client, "tester")
     assert resp.status_code == 200, resp.text
 
 
@@ -120,7 +149,9 @@ def _mk_mo(client, product_id, wh_id, planned):
     )
     assert resp.status_code == 200, resp.text
     mo = resp.json()
+    switch_user(client, "approver")
     resp = client.post(f"/api/v1/manufacturing-orders/{mo['id']}/approve")
+    switch_user(client, "tester")  # v3：不得自审，MO 下达换 approver 后切回
     assert resp.status_code == 200, resp.text
     return mo
 
@@ -272,13 +303,14 @@ def test_receive_qualified_batch_no_reuse_400(client, db_session):
 
     resp, _ = _po_receive(client, db, raw, sup, wh, "LOT-Q2", 5, "2")
     assert resp.status_code == 400, resp.text
-    assert "批次号已存在" in resp.json()["detail"]
+    # v3：批次号一律不复用，detail 提示「不复用」
+    assert "不复用" in resp.json()["detail"]
     assert db.scalar(select(Batch.batch_no).where(Batch.batch_no == "LOT-Q2")) == "LOT-Q2"
     assert len(db.scalars(select(Batch).where(Batch.batch_no == "LOT-Q2")).all()) == 1
 
 
-def test_receive_pending_batch_no_reuse_200_still_pending(client, db_session):
-    """pending 批次号追加入库 → 200 复用原批次，检验状态仍 pending。"""
+def test_receive_pending_batch_no_reuse_400_not_reused(client, db_session):
+    """v3 语义反转：pending 批次号再入库也 400（批次号不复用），批次不新增、存量不变。"""
     db = db_session
     wh = _mk_wh(db)
     raw = _mk_mat(db, "RW6")
@@ -290,11 +322,14 @@ def test_receive_pending_batch_no_reuse_200_still_pending(client, db_session):
     assert batch.insp_status == InspStatus.pending
 
     resp, _ = _po_receive(client, db, raw, sup, wh, "LOT-P2", 5, "2")
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
+    # v3：批次号不复用（原 pending 可追加复用语义已废除），提示换新批次号
+    assert "不复用" in resp.json()["detail"]
     batches = db.scalars(select(Batch).where(Batch.batch_no == "LOT-P2")).all()
     assert len(batches) == 1
     assert batches[0].insp_status == InspStatus.pending
-    assert get_stock(db, raw.id, wh.id, batch_id=batch.id)[0] == Decimal("15")
+    # v3：拒绝入库后原批次存量不变（不再追加 5）
+    assert get_stock(db, raw.id, wh.id, batch_id=batch.id)[0] == Decimal("10")
 
 
 def test_receive_closed_batch_no_reuse_400(client, db_session):
@@ -306,11 +341,7 @@ def test_receive_closed_batch_no_reuse_400(client, db_session):
     db.commit()
 
     _, batch = _po_receive(client, db, raw, sup, wh, "LOT-X2", 10, "2")
-    resp = client.post(
-        f"/api/v1/batches/{batch.id}/inspect",
-        json={"items": [{"name": "外观", "result": "不合格"}], "conclusion": "fail"},
-    )
-    assert resp.status_code == 200, resp.text
+    _inspect_fail(client, batch.id)  # v3：双段制 inspect+judge 换人判定
     resp = client.post(
         f"/api/v1/batches/{batch.id}/dispose",
         json={"disposition": "return", "remark": "退货"},
@@ -320,7 +351,8 @@ def test_receive_closed_batch_no_reuse_400(client, db_session):
 
     resp, _ = _po_receive(client, db, raw, sup, wh, "LOT-X2", 5, "2")
     assert resp.status_code == 400, resp.text
-    assert "批次号已存在" in resp.json()["detail"]
+    # v3：批次号不复用
+    assert "不复用" in resp.json()["detail"]
 
 
 # ---------- Fix 3：dispose 挂 batch.dispose 动作键 ----------
@@ -338,11 +370,7 @@ def _mk_rejected_batch(client, db):
     sup = _mk_partner(db, "SRW8", PartnerType.supplier)
     db.commit()
     _, batch = _po_receive(client, db, raw, sup, wh, "LOT-R8", 10, "2")
-    resp = client.post(
-        f"/api/v1/batches/{batch.id}/inspect",
-        json={"items": [{"name": "外观", "result": "不合格"}], "conclusion": "fail"},
-    )
-    assert resp.status_code == 200, resp.text
+    _inspect_fail(client, batch.id)  # v3：双段制 inspect+judge 换人判定
     return batch
 
 
@@ -365,6 +393,10 @@ def test_qa_dispose_200_with_dedicated_key(client, db_session):
     """dispose 动作键 batch.dispose：qa 持有，处置成功闭环。"""
     db = db_session
     batch = _mk_rejected_batch(client, db)
+    raw = db.get(Material, batch.material_id)
+    wh = db.scalar(select(Warehouse).where(Warehouse.code == "WR"))
+    stock_before = get_stock(db, raw.id, wh.id, batch_id=batch.id)[0]
+    assert stock_before > 0
     _switch_role("qa")
     try:
         resp = client.post(
@@ -373,5 +405,8 @@ def test_qa_dispose_200_with_dedicated_key(client, db_session):
         )
         assert resp.status_code == 200, resp.text
         assert batch.insp_status == InspStatus.closed
+        # v3：destroy 报废清现存并留损失（loss_amount>0、现存清零）
+        assert batch.loss_amount > 0
+        assert get_stock(db, raw.id, wh.id, batch_id=batch.id)[0] == Decimal("0")
     finally:
         app.dependency_overrides.pop(get_current_user, None)

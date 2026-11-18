@@ -19,6 +19,7 @@ class BatchOut(BaseModel):
     insp_status: InspStatus
     disposition: str | None
     disposition_remark: str | None
+    loss_amount: Decimal = Decimal("0")
     created_by: str | None
     created_at: datetime
 
@@ -38,7 +39,7 @@ class BatchPage(BaseModel):
     total: int
 
 
-# ---------- V2-S3：检验判定 / 处置 / 追溯 ----------
+# ---------- v3：双段检验（qc 录入 / qa 判定）/ 处置 / 追溯 ----------
 
 
 class InspectionItemIn(BaseModel):
@@ -47,19 +48,32 @@ class InspectionItemIn(BaseModel):
 
 
 class InspectIn(BaseModel):
+    """qc 段：录入检项与建议结论，不改变批次状态。"""
+
     items: list[InspectionItemIn] = Field(min_length=1)
-    conclusion: Literal["pass", "fail"]
+    suggest_conclusion: Literal["pass", "fail"]
     remark: str | None = Field(default=None, max_length=255)
 
 
+class JudgeIn(BaseModel):
+    """qa 段：复核判定（操作人 ≠ qc 录入人）。"""
+
+    conclusion: Literal["pass", "fail"]
+
+
 class InspectionRecordOut(BaseModel):
+    model_config = {"from_attributes": True}  # 路由层直接 model_validate ORM 记录
+
     id: int
     batch_id: int
     items: list[dict]
-    conclusion: str
-    inspector: str | None
+    suggest_conclusion: str
+    recorder: str | None
     inspected_at: datetime
     remark: str | None
+    conclusion: str | None
+    judge_by: str | None
+    judged_at: datetime | None
 
 
 class DisposeIn(BaseModel):
