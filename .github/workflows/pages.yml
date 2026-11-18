@@ -1,12 +1,13 @@
-# GitHub Pages 部署：构建前端静态产物并发布到 https://abelwangyabo.github.io/erp-lite/
-# 注意：Pages 仅托管前端静态壳（页面结构与交互可浏览，后端 API 不可用）。
-# 本地完整体验请按 README 启动后端 + 前端 dev server。
+# GitHub Pages 部署：发布 pages/ 静态介绍页到 https://abelwangyabo.github.io/erp-lite/
+# 注意：Pages 只托管项目介绍页（无后端，ERP 业务界面不可在线运行）。
+# 完整系统请按 README「本地开发」步骤启动。
 
 name: Deploy Pages
 
 on:
   push:
     branches: [main]
+    paths: ['pages/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -19,32 +20,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Install dependencies
-        run: npm ci
-        working-directory: web
-      # Pages 站点在账号子路径下（/erp-lite/），构建时固定 base 避免资源 404
-      - name: Build
-        run: npx vite build --base=/erp-lite/
-        working-directory: web
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: web/dist
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
       - id: deployment
         uses: actions/deploy-pages@v4

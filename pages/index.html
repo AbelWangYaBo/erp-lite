@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>erp-lite · 医疗器械 GMP 迷你 ERP · 全链路闭环演示</title>
+<meta name="description" content="erp-lite：八角色、双段检验、处置退货闭环的迷你 ERP 参考实现。FastAPI + Vue 3，270 测试 / 94 冒烟断言全绿。" />
+<style>
+  :root {
+    --bg: #f7f5f0;
+    --ink: #22211d;
+    --ink-2: #6b675e;
+    --line: #e3dfd5;
+    --accent: #0e6e5c;
+    --accent-ink: #0b5648;
+    --card: #fffefb;
+    --code-bg: #1e1e1a;
+    --code-ink: #d8d4c8;
+    --warn: #a3542c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- 顶栏 ---------- */
+  header {
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .nav { display: flex; align-items: center; gap: 16px; height: 60px; }
+  .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.5px; }
+  .brand em { font-style: normal; color: var(--accent); }
+  .nav .spacer { flex: 1; }
+  .nav a {
+    color: var(--ink-2); text-decoration: none; font-size: 14px;
+    padding: 6px 10px; border-radius: 6px;
+  }
+  .nav a:hover { color: var(--ink); background: var(--line); }
+  .nav a.gh { display: inline-flex; align-items: center; gap: 6px; }
+
+  /* ---------- Hero ---------- */
+  .hero { padding: 72px 0 56px; }
+  .hero .tag {
+    display: inline-block; font-size: 13px; color: var(--accent-ink);
+    border: 1px solid var(--accent); border-radius: 999px; padding: 3px 14px;
+    margin-bottom: 20px; letter-spacing: 1px;
+  }
+  .hero h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.25; font-weight: 700; letter-spacing: 0.5px; }
+  .hero h1 em { font-style: normal; color: var(--accent); }
+  .hero p.lead { margin-top: 18px; max-width: 640px; color: var(--ink-2); font-size: 16px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+  .stat {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 22px; min-width: 130px;
+  }
+  .stat b { display: block; font-size: 26px; color: var(--accent-ink); font-weight: 700; }
+  .stat span { font-size: 13px; color: var(--ink-2); }
+
+  /* ---------- 分节 ---------- */
+  section { padding: 48px 0; border-top: 1px solid var(--line); }
+  section h2 { font-size: 24px; margin-bottom: 8px; letter-spacing: 0.5px; }
+  section p.sub { color: var(--ink-2); margin-bottom: 28px; max-width: 680px; }
+
+  /* ---------- 链路图 ---------- */
+  .chain { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+  .node {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; flex: 1 1 128px; min-width: 118px;
+  }
+  .node b { display: block; font-size: 14px; }
+  .node span { font-size: 12px; color: var(--ink-2); }
+  .node.qa { border-color: var(--accent); }
+  .arrow { align-self: center; color: var(--accent); font-size: 18px; padding: 0 2px; }
+  .chain-note { margin-top: 14px; font-size: 13.5px; color: var(--ink-2); }
+  .chain-note code { background: var(--line); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+
+  /* ---------- 卡片组 ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px;
+  }
+  .card h3 { font-size: 16px; margin-bottom: 10px; }
+  .card h3 code { font-size: 13px; background: var(--line); padding: 2px 8px; border-radius: 5px; margin-left: 6px; }
+  .card p, .card li { font-size: 14px; color: var(--ink-2); }
+  .card ul { padding-left: 18px; }
+  .card li { margin: 4px 0; }
+  .card.rule { border-left: 3px solid var(--accent); }
+
+  /* ---------- 矩阵表 ---------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 720px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 9px 12px; text-align: left; white-space: nowrap; }
+  thead th { background: #f1efe8; font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  td.yes { color: var(--accent-ink); font-weight: 600; text-align: center; }
+  td.no { color: #c6c2b6; text-align: center; }
+  td .note { color: var(--ink-2); font-weight: 400; }
+
+  /* ---------- 启动代码 ---------- */
+  pre {
+    background: var(--code-bg); color: var(--code-ink); border-radius: 12px;
+    padding: 20px 22px; font-size: 13px; line-height: 1.8; overflow-x: auto;
+  }
+  pre .c { color: #8a8676; }
+  pre .k { color: #7cc4b2; }
+
+  /* ---------- 提示条 ---------- */
+  .notice {
+    border: 1px dashed var(--warn); border-radius: 10px; background: #fdf6ef;
+    padding: 14px 18px; font-size: 14px; color: var(--warn); margin-top: 20px;
+  }
+  footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--ink-2); font-size: 13px; }
+  footer a { color: var(--accent-ink); }
+  @media (max-width: 640px) {
+    .hero { padding: 48px 0 40px; }
+    .stat { flex: 1 1 40%; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <div class="brand">erp<em>-</em>lite</div>
+    <div class="spacer"></div>
+    <a href="#chain">闭环链路</a>
+    <a href="#rules">硬规则</a>
+    <a href="#matrix">权限矩阵</a>
+    <a href="#start">本地运行</a>
+    <a class="gh" href="https://github.com/AbelWangYaBo/erp-lite" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="hero">
+    <span class="tag">个人自用 · 参考实现 · 不构成合规认证</span>
+    <h1>医疗器械 GMP 场景的<br><em>全链路闭环</em>迷你 ERP</h1>
+    <p class="lead">
+      进销存 + BOM/MRP + 生产工单 + 批次追溯 + 检验放行 + 应收应付的参考实现。
+      v3 重构的验收底座是「闭环五要素」：每个业务动作必须有状态流转、数量金额自动联动、
+      审计留痕、前端入口、下一步指引——缺一即为断链。
+    </p>
+    <div class="stats">
+      <div class="stat"><b>8</b><span>角色 · 职责分离</span></div>
+      <div class="stat"><b>4</b><span>条闭环业务链路</span></div>
+      <div class="stat"><b>270</b><span>pytest 全绿</span></div>
+      <div class="stat"><b>94</b><span>端到端冒烟断言</span></div>
+    </div>
+  </div>
+
+  <section id="chain">
+    <h2>采购质检怎么闭环</h2>
+    <p class="sub">v2 审计曾发现「处置只是打标签」的断头路：不合格批次不冲应付、不扣库存。v3 的处置是真实业务动作——货动、账动、留痕。</p>
+    <div class="chain">
+      <div class="node"><b>purchase</b><span>下 PO（资质拦截）</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><b>admin</b><span>审核（不得自审）</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><b>warehouse</b><span>收货 · 批次待检</span></div>
+      <div class="arrow">→</div>
+      <div class="node qa"><b>qc → qa</b><span>录入检验 → 复核放行</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><b>production</b><span>领料 · 完工（成品再送检）</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><b>sales</b><span>SO · 出库 · 退货回检</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><b>finance</b><span>核销 · 冲回 · 对账 · 盘点</span></div>
+    </div>
+    <p class="chain-note">
+      不合格批次处置两条路，均账务联动：<code>退货</code> → 红字流水 + 冲应付 + 冲 PO 已收量（订单回 partial 可重收）；
+      <code>报废</code> → 清批次现存 + 损失金额留痕。销售退货则把批次送回待检、冲减应收——
+      纠错一律走反向单据，无物理删除。
+    </p>
+  </section>
+
+  <section id="rules">
+    <h2>两条贯穿全局的硬规则</h2>
+    <p class="sub">不靠人自觉，靠系统 400 拦截。admin 也没有豁免。</p>
+    <div class="grid">
+      <div class="card rule">
+        <h3>不得自审 <code>规则 A</code></h3>
+        <ul>
+          <li>PO / SO / MO 审核、资质审核与撤销、检验复核</li>
+          <li>操作人 ≠ 单据创建 / 录入人，违反直接拒绝</li>
+          <li>制单与审批强制分离，职责分离落在代码里</li>
+        </ul>
+      </div>
+      <div class="card rule">
+        <h3>质检双段制 <code>规则 B</code></h3>
+        <ul>
+          <li>qc 录入检项与建议结论 → qa 复核判定放行</li>
+          <li>原料批次与 MO 完工成品批次统一走此链路</li>
+          <li>成品不再「完工即合格」，pending 不可领料出库</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>闭环五要素</h3>
+        <ul>
+          <li>状态流转可达终点 · 数量金额自动联动</li>
+          <li>审计留痕（who + role + 字段前后值）</li>
+          <li>前端入口 + 下一步指引 · 单据全程可点击互跳</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>角色工作台</h3>
+        <ul>
+          <li>登录首页即待办：待审 / 待检 / 待放行 / 待核销</li>
+          <li>库存三口径：合格 / 待检 / 不合格分列展示</li>
+          <li>操作成功提示「下一步轮到谁」</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="matrix">
+    <h2>八角色权限矩阵（节选）</h2>
+    <p class="sub">完整矩阵见仓库 docs/DESIGN-v3.md §3；后端 deps 强制 403，前端菜单按钮联动显隐。</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>动作</th><th>admin</th><th>purchase</th><th>sales</th><th>warehouse</th><th>production</th><th>qc</th><th>qa</th><th>finance</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">po.create / approve</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td class="mono">po.receive（收货入库）</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td class="mono">so.create / ship / 退货</td><td class="yes">✓</td><td class="no">—</td><td class="yes">✓</td><td class="yes"><span class="note">仅出库</span></td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td class="mono">mo.* / bom / mrp</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td class="mono">batch.inspect（检验录入）</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td class="mono">batch.judge / dispose</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td></tr>
+          <tr><td class="mono">cert.audit / revoke</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td></tr>
+          <tr><td class="mono">settlement / statement / 盘点过账</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td></tr>
+          <tr><td class="mono">audit.read（审计查询）</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="start">
+    <h2>本地完整运行</h2>
+    <p class="sub">前后端分离：FastAPI + SQLAlchemy + Alembic + SQLite（dev）/ PostgreSQL（prod）；Vue 3 + Element Plus + Vite。</p>
+    <pre><span class="c"># 后端（默认 SQLite，先迁移建表再灌幂等种子）</span>
+<span class="k">cd</span> backend
+uv sync
+<span class="k">export</span> DATABASE_URL=sqlite:///./erp-dev.db
+uv run alembic upgrade head
+uv run python ../scripts/seed.py
+uv run uvicorn erp_lite.main:app --reload --port 8100
+
+<span class="c"># 前端（dev 代理 /api → localhost:8100）</span>
+<span class="k">cd</span> web
+npm install
+npm run dev
+<span class="c"># 打开 http://localhost:15173 —— 登录页有八账号一键填入</span>
+
+<span class="c"># 全链路冒烟（94 断言，八角色接力）</span>
+uv run python ../scripts/smoke_v3.py</pre>
+    <div class="notice">
+      本页为静态介绍页：ERP 业务界面依赖后端 API，不在 GitHub Pages 上运行。
+      请按上述步骤本地启动后访问完整系统。
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    erp-lite · 个人自用演示 / 参考实现，系统能力落地参考，不构成任何 GMP 合规认证 ·
+    设计文档与审计报告见 <a href="https://github.com/AbelWangYaBo/erp-lite/tree/main/docs" target="_blank" rel="noopener">docs/</a> ·
+    <a href="https://github.com/AbelWangYaBo/erp-lite" target="_blank" rel="noopener">GitHub 仓库</a>
+  </div>
+</footer>
+
+</body>
+</html>
